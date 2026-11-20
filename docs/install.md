@@ -28,7 +28,15 @@ for entry in "/ PVEAuditor" "/pool/whmpve PVEVMAdmin,PVEPoolAdmin" "/storage PVE
 done
 ```
 
-5. 若 PVE 使用默认签发的证书，将 PVE 上的 **`/etc/pve/pve-root-ca.pem`** 复制到 **WHMCS 主机**的 `/etc/whmpve/pve-root-ca.pem`。让网站 PHP 和 WHMCS Cron 的运行用户可读。记录与 PVE 证书匹配、能从 WHMCS 主机解析的 PVE 主机名，例如 `pve1.example.net`。 [Proxmox VE 权限文档](https://github.com/proxmox/pve-docs/blob/master/pveum.adoc)
+5. 在 PVE Shell 执行以下命令。**这是部署必需项，已有部署也要补齐。** `/vms` 上可传播的 `VM.Backup` 覆盖整个集群，旧 VMID 移出资源池后仍需要这项权限。使用不同用户或令牌 ID 时，替换对应值。
+
+```sh
+pveum role add WHMPVEBackup --privs VM.Backup
+pveum acl modify /vms --users whmpve@pve --roles WHMPVEBackup --propagate 1
+pveum acl modify /vms --tokens 'whmpve@pve!whmcs' --roles WHMPVEBackup --propagate 1
+```
+
+6. 若 PVE 使用默认签发的证书，将 PVE 上的 **`/etc/pve/pve-root-ca.pem`** 复制到 **WHMCS 主机**的 `/etc/whmpve/pve-root-ca.pem`。让网站 PHP 和 WHMCS Cron 的运行用户可读。记录与 PVE 证书匹配、能从 WHMCS 主机解析的 PVE 主机名，例如 `pve1.example.net`。 [Proxmox VE 权限文档](https://github.com/proxmox/pve-docs/blob/master/pveum.adoc)
 
 ## 3. 在 PVE 准备镜像
 
@@ -89,7 +97,7 @@ pveum acl modify /vms/9000 --tokens 'whmpve@pve!whmcs' --roles PVETemplateUser
 
 ![WHMPVE 服务器页，红框指向添加服务器](images/install/whmpve-add-server.png)
 
-2. 填写下表并保存，然后在该服务器一行点「检测」，确认返回 PVE 版本和节点。
+2. 填写下表并保存，然后在该服务器一行点「检测」，确认显示「连接成功，备份权限正常」。
 
 | 字段 | 示例 |
 | --- | --- |
@@ -101,7 +109,7 @@ pveum acl modify /vms/9000 --tokens 'whmpve@pve!whmcs' --roles PVETemplateUser
 | 权限池（PVE Pool） | `whmpve` |
 | CA 证书路径（可选） | PVE 使用默认签发证书时填 `/etc/whmpve/pve-root-ca.pem` |
 
-PVE API 使用其他端口时，在「高级设置」修改「API 端口」。
+需要 VPS 随 PVE 宿主机启动时，勾选「宿主机开机时自动启动 VPS」。切换后，等待 WHMCS Cron 同步该服务器已有的 VPS。PVE API 使用其他端口时，在「高级设置」修改「API 端口」。
 
 ![WHMPVE 添加服务器表单，红框标出了地址、令牌、节点、资源池、CA 路径和保存按钮](images/install/whmpve-server.png)
 
@@ -144,8 +152,11 @@ PVE API 使用其他端口时，在「高级设置」修改「API 端口」。
 
 ![WHMCS 产品的模块设置，红框标出了模块、服务器、Plan 和首笔付款选项](images/install/whmcs-product-module.png)
 
-3. 使用已启用的支付方式创建一笔测试订单并完成支付。需要测试线下入账时，可在 WHMCS 启用「Bank Transfer」，用测试客户下单，再在对应账单点「Add Payment」登记测试付款。
-4. 打开「附加模块 → WHMPVE → 日志/任务」确认开通成功，再到「实例管理」点击「管理」。在 PVE 核对这台实例的运行状态、IP 和磁盘。用测试客户账号打开服务详情，检查电源操作和任务状态。
+3. 需要发送交付邮件时，在产品的「详细信息」里选择「欢迎邮件」模板。异步开通完成后，由 WHMCS Cron 发送这封邮件。
+4. 使用已启用的支付方式创建一笔测试订单并完成支付。需要测试线下入账时，可在 WHMCS 启用「Bank Transfer」，用测试客户下单，再在对应账单点「Add Payment」登记测试付款。
+5. 打开「附加模块 → WHMPVE → 日志/任务」确认开通成功，再到「实例管理」点击「管理」。在 PVE 核对这台实例的运行状态、IP 和磁盘。用测试客户账号打开服务详情，检查电源操作和任务状态。配置了欢迎邮件的产品也要检查邮件日志。
+
+KVM 加购 CPU 或内存后，按客户区「附加服务」的提示重新启动 VPS。
 
 ![WHMPVE 实例管理页，红框指向实例管理标签与管理入口](images/install/whmpve-instance.png)
 

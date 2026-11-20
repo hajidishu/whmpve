@@ -65,17 +65,51 @@ final class Backups
 
     public static function archive(Pve $pve,array $instance,array $record): ?array
     {
-        $storage=Disks::storage(explode(':',$record['volume'],2)[0]);
-        $rows=$pve->request('GET',self::path($pve,$storage),['content'=>'backup','vmid'=>$record['source_vmid']]);
+        $volume=$record['volume'];
+        $storage=Disks::storage(explode(':',$volume,2)[0]);
+        $path=self::path($pve,$storage);
+        $rows=$pve->request('GET',$path,['content'=>'backup','vmid'=>$record['source_vmid']]);
         if (!is_array($rows) || !array_is_list($rows)) { throw new Fault('PVE 备份列表无效',502); }
         foreach ($rows as $row) {
-            if (($row['volid'] ?? '')!==$record['volume']) { continue; }
-            if (($row['notes'] ?? '')!==self::note($instance,(int)$record['task_id'])) {
-                throw new IdentityMismatch('PVE 备份身份不匹配',409);
-            }
-            return $row;
+            if (($row['volid'] ?? '')===$volume) { return self::verifyArchive($instance,$record,$row); }
         }
-        return null;
+        try {
+            $archive=$pve->request('GET',$path.'/'.rawurlencode($volume));
+        } catch (PveHttpFault $e) {
+            if ($e->status===403) {
+                throw new Fault('无权读取 PVE 备份，请检查源 VMID '.$record['source_vmid'].' 的 VM.Backup 和备份存储权限。',403);
+            }
+            // File storage reports a failed stat as "no format" after checking volume permissions.
+            if ($e->status!==500 || $e->detail!=="volume_size_info on '$volume' failed - no format") { throw $e; }
+            $status=$pve->request('GET',substr($path,0,-strlen('/content')).'/status');
+            if (empty($status['enabled']) || empty($status['active']) || !in_array('backup',explode(',',$status['content'] ?? ''),true)) {
+                throw new Fault('PVE 备份存储不可用',502);
+            }
+            if (!preg_match('#:backup/vzdump-(lxc|qemu)-[0-9]+-#D',$volume)) { throw $e; }
+            return null;
+        }
+        if (!is_array($archive)) { throw new Fault('PVE 归档查询结果无效',502); }
+        return self::verifyArchive($instance,$record,$archive+['volid'=>$volume]);
+    }
+
+    private static function verifyArchive(array $instance,array $record,array $archive): array
+    {
+        if (($archive['volid'] ?? '')!==$record['volume'] || ($archive['notes'] ?? '')!==self::note($instance,(int)$record['task_id'])) {
+            throw new IdentityMismatch('PVE 备份身份不匹配',409);
+        }
+        return $archive;
+    }
+
+    public static function requireRotationAccess(Pve $pve,array $instance,array $record): void
+    {
+        $archive=self::archive($pve,$instance,$record);
+        if (!$archive) { return; }
+        if (!empty($archive['protected'])) { throw new Fault('PVE 旧备份已设为保护，无法自动轮换',409); }
+        $storage=Disks::storage(explode(':',$record['volume'],2)[0]);
+        if (!array_key_exists('VM.Backup',$pve->permissions('/vms/'.(int)$record['source_vmid']))
+            || !array_key_exists('Datastore.AllocateSpace',$pve->permissions('/storage/'.$storage))) {
+            throw new Fault('缺少删除源 VMID '.$record['source_vmid'].' 备份的权限，已跳过本次轮换。',403);
+        }
     }
 
     public static function checkCreate(array $instance,bool $automatic,?string $cutoff=null): bool

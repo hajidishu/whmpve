@@ -13,6 +13,13 @@ class Fault extends \RuntimeException
 }
 final class IdentityMismatch extends Fault {}
 final class UnknownPveRequest extends Fault {}
+final class PveHttpFault extends Fault
+{
+    public function __construct(string $message,public readonly int $status,public readonly string $detail)
+    {
+        parent::__construct($message,502);
+    }
+}
 final class VmidConflict extends Fault {}
 final class Pending extends \RuntimeException {}
 
@@ -90,7 +97,7 @@ final class Util
 
 final class Schema
 {
-    public const VERSION = '0.5.6';
+    public const VERSION = '0.5.7';
     public static function installed(): bool { return DB::schema()->hasTable('mod_whmpve_servers'); }
 
     public static function install(): void

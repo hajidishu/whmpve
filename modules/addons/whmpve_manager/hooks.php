@@ -7,6 +7,9 @@ if (!defined('WHMPVE_HOOKS_REGISTERED')) {
         try { \Whmpve\Cron::run(); }
         catch (\Throwable $e) { error_log('WHMPVE Cron: '.$e->getMessage()); }
     });
+    add_hook('EmailPreSend',1,function($vars) {
+        return \Whmpve\Delivery::suppressNative((int)($vars['relid'] ?? 0),(string)($vars['messagename'] ?? '')) ? ['abortsend'=>true] : [];
+    });
     add_hook('UserLogin',1,function($vars) {
         if (!defined('ADMINAREA') || !ADMINAREA) { \Whmpve\Http::rememberClientLogin((int)$vars['user']->id); }
     });

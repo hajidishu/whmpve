@@ -79,9 +79,16 @@ final class Pve
             if (in_array($code,[400,409,500],true) && $candidate && self::vmidAlreadyUsed($detail,$candidate)) {
                 throw new VmidConflict($message,409);
             }
-            throw new Fault($message,502);
+            throw new PveHttpFault($message,$code,trim($detail));
         }
         return $reply['data'];
+    }
+
+    public function permissions(string $path): array
+    {
+        $result=$this->request('GET','/access/permissions',['path'=>$path]);
+        if (!is_array($result) || !is_array($result[$path] ?? [])) { throw new Fault('PVE 权限查询结果无效',502); }
+        return $result[$path] ?? [];
     }
 
     public static function vmidAlreadyUsed(string $message,int $vmid): bool
@@ -155,6 +162,19 @@ final class Pve
         return ['path'=>$path,'node'=>$location['node'],'config'=>$config,'status'=>$location['status'] ?? 'unknown','vmid'=>$vmid];
     }
     public static function marker(array $instance): string { return 'WHMPVE:'.$instance['service_id'].':'.$instance['uuid']; }
+    public function setOnboot(array $owned,bool $enabled): void
+    {
+        if (!empty($owned['config']['onboot'])===$enabled) { return; }
+        if (!empty($owned['config']['lock'])) { throw new Pending('等待 PVE 实例释放配置锁'); }
+        try {
+            $this->request('PUT',$owned['path'].'/config',['onboot'=>(int)$enabled,'digest'=>$owned['config']['digest']]);
+        } catch (PveHttpFault $e) {
+            if (str_starts_with($e->detail,'detected modified configuration') || preg_match('/^(?:VM|CT) is locked \(/i',$e->detail)) {
+                throw new Pending('等待重新读取 PVE 实例配置');
+            }
+            throw $e;
+        }
+    }
     public static function sizeGib(string $volume): float
     {
         if (!preg_match('/\bsize=(\d+(?:\.\d+)?)([KMGTPE])\b/',$volume,$m)) { throw new Fault('无法读取系统盘容量，请检查模板配置'); }
@@ -337,7 +357,12 @@ final class Pve
     {
         $version=$this->request('GET','/version');
         $s=$this->request('GET','/nodes/'.rawurlencode($this->settings['node']).'/status');
-        return ['version'=>$version['version'],'node'=>$this->settings['node'],'memory_total'=>$s['memory']['total'],'memory_used'=>$s['memory']['used']];
+        $storage='/storage/'.($this->settings['backup_storage'] ?? 'local');
+        $missing=[];
+        if (empty($this->permissions('/vms')['VM.Backup'])) { $missing[]='/vms 的 VM.Backup（传播）'; }
+        if (!array_key_exists('Datastore.AllocateSpace',$this->permissions($storage))) { $missing[]=$storage.' 的 Datastore.AllocateSpace'; }
+        return ['version'=>$version['version'],'node'=>$this->settings['node'],'memory_total'=>$s['memory']['total'],'memory_used'=>$s['memory']['used'],
+            'backup_missing'=>$missing];
     }
     public function consoleTicket(array $instance,string $mode): array
     {

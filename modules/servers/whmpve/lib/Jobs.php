@@ -230,6 +230,66 @@ final class Jobs
         return self::public(Util::row('tasks',(int)$task['id']));
     }
 
+    public static function onbootServers(): array
+    {
+        $keys=DB::table('mod_whmpve_cache')->where('cache_key','like','onboot:%')->where('expires_at','<=',time())->pluck('cache_key')->all();
+        return array_map(fn($key)=>(int)substr($key,7),$keys);
+    }
+
+    public static function syncOnboot(int $server,float $deadline): bool
+    {
+        $lock='whmpve_server_'.$server;
+        if (empty(DB::select('SELECT GET_LOCK(?,0) as acquired',[$lock])[0]->acquired)) { return false; }
+        try {
+            $query=DB::table('mod_whmpve_cache')->where('cache_key','onboot:'.$server)->where('expires_at','<=',time());
+            $value=$query->value('value');
+            if (!$value) { return false; }
+            $state=Util::unpack($value);
+            $job=$query->where('value',$value);
+            $instance=DB::table('mod_whmpve_instances')->where('server_id',$server)->where('id','>',$state['cursor'])
+                ->whereNotNull('vmid')->whereIn('lifecycle',['active','suspended'])->orderBy('id')->first();
+            if (!$instance) {
+                if ($state['retry']) {
+                    $job->update(['value'=>Util::json(array_replace($state,['cursor'=>0,'retry'=>false])),
+                        'expires_at'=>time()+300,'updated_at'=>Util::now()]);
+                } else { $job->delete(); }
+                return false;
+            }
+            $service=(int)$instance->service_id;
+            $state['cursor']=(int)$instance->id;
+            try {
+                if (DB::table('mod_whmpve_tasks')->where('service_id',$service)->whereIn('status',['queued','running'])->exists()) {
+                    throw new Pending('等待实例任务完成');
+                }
+                self::checkPasswordReset($service);
+                self::checkReinstallRecovery($service,(int)$instance->vmid);
+                $native=DB::table('tblhosting as h')->join('tblproducts as p','p.id','=','h.packageid')
+                    ->where('h.id',$service)->where('p.servertype','whmpve')->first(['h.server','h.domainstatus']);
+                if ($native) {
+                    Catalog::assertServerBinding((array)$instance,(int)$native->server);
+                    $pve=new Pve($server,$deadline,true);
+                    $owned=$pve->owned((array)$instance) ?? throw new IdentityMismatch('实例在 PVE 上不存在',404);
+                    $spec=Util::unpack($instance->applied ?: $instance->desired);
+                    $enabled=!empty($pve->settings['onboot']) && $instance->lifecycle==='active' && $native->domainstatus==='Active'
+                        && !self::unfinishedNetworkEdit($service) && Traffic::target($spec,Traffic::row($service))!=='suspended';
+                    if ($enabled && DB::table('mod_whmpve_tasks')->where('service_id',$service)->where('action','backup_restore')
+                        ->where('status','failed')->whereRaw("JSON_CONTAINS_PATH(context, 'one', '$.ops.\"restore-start\"', '$.done.\"restore-start\"')")
+                        ->whereRaw("CAST(JSON_UNQUOTE(JSON_EXTRACT(context, '$.old_vmid')) AS UNSIGNED) = ?",[$instance->vmid])->exists()) {
+                        throw new Fault('备份恢复尚有待核对的实例，请先重试原任务');
+                    }
+                    $pve->setOnboot($owned,$enabled);
+                }
+            } catch (Pending) {
+                $state['retry']=true;
+            } catch (\Throwable $e) {
+                $state['retry']=$state['retry'] || $e instanceof UnknownPveRequest;
+                Util::log('同步开机自启动失败：'.$e->getMessage(),$server,$service,'warning');
+            }
+            $job->update(['value'=>Util::json($state),'updated_at'=>Util::now()]);
+            return true;
+        } finally { DB::select('SELECT RELEASE_LOCK(?)',[$lock]); }
+    }
+
     public static function run(?int $id=null,?int $serverId=null,?float $deadline=null,bool $foreground=false): bool
     {
         if (!Util::enabled()) { return false; }
@@ -277,7 +337,7 @@ final class Jobs
                 self::requireProvisioning($instance);
                 if ($instance['lifecycle']==='active' && $instance['vmid']) {
                     (new Pve((int)$instance['server_id']))->owned($instance) ?: throw new Fault('已开通实例在 PVE 上不存在');
-                    return 'success';
+                    return Delivery::nativeSuccess((int)$params['serviceid']);
                 }
             }
             if ($action==='terminate' && $instance['lifecycle']==='terminated') { return 'success'; }
@@ -292,7 +352,9 @@ final class Jobs
             $deadline=microtime(true)+65;
             do {
                 self::run((int)$task['id']); $task=Util::row('tasks',(int)$task['id']);
-                if ($task['status']==='success') { return 'success'; }
+                if ($task['status']==='success') {
+                    return $action==='create' ? Delivery::nativeSuccess((int)$params['serviceid']) : 'success';
+                }
                 if ($task['status']==='failed') { return $task['error']; }
                 usleep(250000);
             } while (microtime(true)<$deadline);
@@ -718,6 +780,45 @@ final class Job
             $this->ctx['done']['whmcs_status']=true; $this->save();
         }
     }
+    private function enableConfiguredOnboot(): void
+    {
+        if (!empty($this->pve->settings['onboot'])) {
+            $owned=$this->pve->owned($this->instance) ?? throw new Fault('PVE 实例不存在');
+            $this->pve->setOnboot($owned,true);
+        }
+    }
+
+    private function disableSourceOnboot(int $vmid,string $key): void
+    {
+        $owned=$this->pve->owned($this->instance,$vmid) ?? throw new Fault('原实例不存在');
+        if (!isset($this->ctx[$key])) {
+            $this->ctx[$key]=!empty($owned['config']['onboot']);
+            $this->save();
+        }
+        $this->pve->setOnboot($owned,false);
+    }
+
+    private function restoreSourceOnboot(int $vmid,string $key,array $spec): void
+    {
+        if (!empty($this->ctx[$key]) && $this->serviceMayBoot($spec)) {
+            $owned=$this->pve->owned($this->instance,$vmid) ?? throw new Fault('原实例不存在');
+            $this->pve->setOnboot($owned,true);
+        }
+    }
+
+    private function serviceMayBoot(array $spec): bool
+    {
+        $service=(int)$this->instance['service_id'];
+        return $this->instance['lifecycle']==='active' && DB::table('tblhosting')->where('id',$service)->value('domainstatus')==='Active'
+            && Traffic::target($spec,Traffic::row($service))!=='suspended';
+    }
+
+    private function finishReplacement(int $old,array $spec): void
+    {
+        $this->remove($old,'remove-old');
+        if (!empty($this->pve->settings['onboot']) && $this->serviceMayBoot($spec)) { $this->enableConfiguredOnboot(); }
+    }
+
     public function execute(): void
     {
         $action=$this->task['action']; $spec=Util::unpack($this->instance['applied'] ?: $this->instance['desired']);
@@ -749,10 +850,13 @@ final class Job
                 $ips=$this->pve->ips($service);
                 $fields=$ips ? ['dedicatedip'=>$ips[0]['address'],
                     'assignedips'=>implode("\n",array_column(array_slice($ips,1),'address'))] : [];
+                $this->enableConfiguredOnboot();
                 $this->finishStatus('Active',$fields);
                 $this->mutate(['lifecycle'=>'active','applied'=>Util::json($spec)]);
                 DB::table('mod_whmpve_ips')->where('server_id',$this->instance['server_id'])->where('service_id',$service)
                     ->update(['state'=>'assigned','updated_at'=>Util::now()]);
+                $this->ctx['welcome'] ??= ['state'=>'queued','at'=>time(),'attempts'=>0];
+                $this->save();
             });
             return;
         }
@@ -784,7 +888,11 @@ final class Job
                 $owned=$this->pve->owned($this->instance) ?: throw new Fault('实例不存在');
                 $this->op('disable-onboot','PUT',$owned['path'].'/config',['onboot'=>0]); $this->power('stop');
                 $this->mutate(['lifecycle'=>'suspended']); $this->finishStatus('Suspended');
-            } else { $this->power('start'); $this->mutate(['lifecycle'=>'active']); $this->finishStatus('Active'); }
+            } else {
+                $this->power('start');
+                $this->enableConfiguredOnboot();
+                $this->mutate(['lifecycle'=>'active']); $this->finishStatus('Active');
+            }
             return;
         }
         if ($action==='change_package') {
@@ -871,7 +979,7 @@ final class Job
                 $this->ctx['traffic-bound']=true; $this->save();
             }
             $this->stage('清理已停止的原实例',6,6);
-            $this->remove((int)$this->ctx['old_vmid'],'remove-old');
+            $this->finishReplacement((int)$this->ctx['old_vmid'],$spec);
             return;
         }
         if (isset($this->ctx['reinstall_error'])) { $this->rollbackReinstall($spec); }
@@ -911,6 +1019,7 @@ final class Job
         }
         try {
             $this->stage('停止原实例并转交数据盘',3,6);
+            $this->disableSourceOnboot($old,'reinstall_onboot');
             $this->power('shutdown',$old,'old-shutdown');
             if ($this->reinstallPowerState($old)!=='stopped') { throw new Pending('等待原实例确认关机'); }
             $this->transferDisks($old,$new,'transfer-');
@@ -942,7 +1051,7 @@ final class Job
             $this->ctx['traffic-bound']=true; $this->save();
         });
         $this->stage('清理已停止的原实例',6,6);
-        $this->remove($old,'remove-old');
+        $this->finishReplacement($old,$spec);
     }
 
     private function reinstallPowerState(int $vmid): string
@@ -989,11 +1098,10 @@ final class Job
             $this->ctx['reinstall_disks_returned']=true; $this->save();
         }
         $this->verifyReinstallDisks($old,$spec);
-        $service=(int)$this->instance['service_id'];
-        if ($wasRunning && DB::table('tblhosting')->where('id',$service)->value('domainstatus')==='Active'
-            && Traffic::target($spec,Traffic::row($service))!=='suspended') {
+        if ($wasRunning && $this->serviceMayBoot($spec)) {
             $this->power('start',$old,'rollback-old-start');
         }
+        $this->restoreSourceOnboot($old,'reinstall_onboot',$spec);
         $this->remove($new,'rollback-remove');
         $message=($wasRunning===null ? '重装失败，数据盘已归位，原电源状态待核对：' : '重装失败，已回滚原实例：').$error;
         $this->ctx=['reinstall_rolled_back'=>$message]; $this->save();
@@ -1010,7 +1118,13 @@ final class Job
                 $this->stage('已跳过自动备份',1,1); return;
             }
             $limit=Backups::policy($this->instance)['limit'];
-            if ($automatic) { $this->pruneBackups($limit,$task); }
+            if ($automatic) {
+                $this->pruneBackups($limit,$task);
+                if (Backups::records($this->instance)->count()>=$limit) {
+                    $old=Backups::records($this->instance)->where('automatic',1)->orderBy('id')->first();
+                    if ($old) { Backups::requireRotationAccess($this->pve,$this->instance,(array)$old); }
+                }
+            }
             $owned=$this->pve->owned($this->instance) ?: throw new Fault('实例不存在');
             $this->prepareBackup($spec,$owned);
             $this->ctx['backup_limit']=$limit;
@@ -1126,9 +1240,11 @@ final class Job
             }
         }
         $this->stage('清理临时归档和原容器',6,6);
-        if ($this->ctx['reset_onboot']) { $this->setResetOnboot($this->ctx['new_vmid'],1,'reset-new-onboot'); }
         $this->clearPasswordResetArchive();
         $this->remove($this->ctx['old_vmid'],'remove-old');
+        if (($this->ctx['reset_onboot'] || !empty($this->pve->settings['onboot'])) && $this->serviceMayBoot($spec)) {
+            $this->setResetOnboot($this->ctx['new_vmid'],1,'reset-new-onboot');
+        }
         unset($this->ctx['password_reset_pending']);
         $this->save();
     }
@@ -1295,12 +1411,13 @@ final class Job
     {
         if (!empty($this->ctx['restore_bound'])) {
             $this->stage('清理原实例',5,5);
-            $this->remove($this->ctx['old_vmid'],'remove-old');
+            $this->finishReplacement((int)$this->ctx['old_vmid'],$spec);
             return;
         }
         if (isset($this->ctx['restore_error'])) {
             $this->power('stop',$this->ctx['new_vmid'],'restore-rollback-stop');
-            if ($this->ctx['restore_running']) { $this->power('start',$this->ctx['old_vmid'],'restore-rollback-start'); }
+            if ($this->ctx['restore_running'] && $this->serviceMayBoot($spec)) { $this->power('start',$this->ctx['old_vmid'],'restore-rollback-start'); }
+            $this->restoreSourceOnboot((int)$this->ctx['old_vmid'],'restore_onboot',$spec);
             $error=$this->ctx['restore_error']; unset($this->ctx['restore_error']);
             foreach (['restore-stop','restore-start','restore-final-stop','restore-rollback-stop','restore-rollback-start'] as $key) {
                 unset($this->ctx['ops'][$key],$this->ctx['done'][$key]);
@@ -1341,7 +1458,7 @@ final class Job
         }
         $new=(int)$this->ctx['new_vmid'];
         $this->stage('恢复备份副本',2,$temporary ? 6 : 5);
-        $params=['vmid'=>$new,'pool'=>$this->pve->settings['pve_pool'],'unique'=>1];
+        $params=['vmid'=>$new,'pool'=>$this->pve->settings['pve_pool'],'unique'=>1,'onboot'=>0];
         if ($lxc) {
             $params+=['ostemplate'=>$record['volume'],'restore'=>1,'start'=>0];
             if ($temporary) {
@@ -1350,7 +1467,7 @@ final class Job
                     $password=crypt($password,'$6$'.bin2hex(random_bytes(8)).'$');
                     if (!str_starts_with($password,'$6$')) { throw new Fault('无法为新密码生成散列'); }
                 }
-                $params+=['password'=>$password,'onboot'=>0];
+                $params['password']=$password;
             }
             foreach ($disks as $slot=>$disk) {
                 $params[$slot]=$disk['storage'].':'.Util::json($sizes[$slot]).($disk['id'] ? ',mp='.$disk['mountpoint'].',backup=1' : '');
@@ -1389,7 +1506,10 @@ final class Job
         if ($temporary) {
             $this->checkPasswordResetAccount();
             $this->checkPasswordResetSource();
-        } else { $this->power('shutdown',$vmid,'restore-stop'); }
+        } else {
+            $this->disableSourceOnboot($vmid,'restore_onboot');
+            $this->power('shutdown',$vmid,'restore-stop');
+        }
         try {
             if ($temporary && !$this->ctx['restore_running']
                 && (!empty($this->ctx['done']['restore-final-stop']) || !empty($this->ctx['ops']['restore-final-stop']))) {
@@ -1432,7 +1552,7 @@ final class Job
         });
         if ($temporary) { return; }
         $this->stage('清理原实例',5,5);
-        $this->remove($vmid,'remove-old');
+        $this->finishReplacement($vmid,$spec);
     }
 
     private function registerRestoredDisks(array $replacement,array $disks): array
@@ -1647,7 +1767,7 @@ final class Job
             $rates=Pve::rates($owned['config'],Traffic::speed($spec,$row));
             if ($rates) { $this->op('quota-rate','PUT',$owned['path'].'/config',$rates+['digest'=>$owned['config']['digest']]); }
             if ($row['restriction']==='suspended' || !empty($this->ctx['ops']['quota-resume']) || !empty($this->ctx['done']['quota-resume'])) {
-                $this->resumeQuota($service,$owned['path']);
+                $this->resumeQuota($service,$owned['path'],$spec);
             }
         }
         DB::table('mod_whmpve_traffic')->where('service_id',$service)->update(['restriction'=>$target,'updated_at'=>Util::now()]);
@@ -1660,7 +1780,7 @@ final class Job
             ->where('n.duedate','<',date('Y-m-d'))->exists();
     }
 
-    private function resumeQuota(int $service,string $path): void
+    private function resumeQuota(int $service,string $path,array $spec): void
     {
         $native=DB::table('tblhosting')->where('id',$service)->first();
         if ($native->domainstatus==='Suspended' && $native->suspendreason===Traffic::REASON && !$this->overdue($service)) {
@@ -1688,6 +1808,7 @@ final class Job
             return false;
         });
         if ($keepStopped && $started) { $this->power('stop',null,'quota-resume-cancelled'); }
+        elseif ($started && $this->serviceMayBoot($spec)) { $this->enableConfiguredOnboot(); }
     }
 
     private function settleQuotaPower(string $path,string $key,string $action): void

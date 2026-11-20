@@ -130,6 +130,7 @@
     const defaults = config.server_defaults;
     return `<form data-form="server" data-id="${server?.id || 0}"><div class="wmp-form">
       <label class="wmp-field wmp-check wmp-full"><span>启用此服务器</span><input type="checkbox" name="active" ${!server || Number(server.active) ? 'checked' : ''}></label>
+      <label class="wmp-field wmp-check wmp-full"><span>宿主机开机时自动启动 VPS</span><input type="checkbox" name="onboot" ${settings.onboot?'checked':''}></label>
       ${input('名称','name',server?.name)}${input('PVE 地址','host',server?.host,'text','192.168.1.10')}
       ${input('API 令牌 ID','token_id',server?.token_id,'text','user@pve!token')}
       ${input('API 密钥','token_secret','','password',server?.has_token ? '留空保留' : '')}
@@ -499,7 +500,10 @@
       const fields = new FormData(form);
       const values = {id:Number(form.dataset.id),server_id:ui.server,...Object.fromEntries(fields)};
       if (type === 'plan' || type === 'image') values.kind=form.elements.kind.value;
-      if (type === 'server') values.active = form.elements.active.checked ? 1 : 0;
+      if (type === 'server') {
+        values.active=fields.has('active');
+        values.onboot=fields.has('onboot');
+      }
       if (type === 'addon') {
         values.plan_id=ui.modal.plan.id;
         values.active=fields.has('active');
@@ -653,7 +657,11 @@
     else if (d.remove) run(() => api('record.delete',{table:d.remove,id:Number(d.id),server_id:ui.server}));
     else if (d.removeServer) {
       if (confirm('移除该服务器及其 Plan、镜像和 IP 配置？')) run(() => api('server.delete',{id:Number(d.removeServer)}));
-    } else if (d.inspect) run(async () => { await api('inspect',null,{server_id:d.inspect}); message = '连接成功'; });
+    } else if (d.inspect) run(async () => {
+      const {backup_missing=[]}=await api('inspect',null,{server_id:d.inspect});
+      if (backup_missing.length) throw new Error('连接成功，请补齐备份权限 '+backup_missing.join('、'));
+      message='连接成功，备份权限正常';
+    });
     else if (d.page) { ui.page = Number(d.page); refresh(); }
     else if ('search' in d) { ui.search = root.querySelector('[data-search-input]').value; ui.page = 1; refresh(); }
     else if ('clearService' in d) { ui.service = 0; ui.page = 1; refresh(); }

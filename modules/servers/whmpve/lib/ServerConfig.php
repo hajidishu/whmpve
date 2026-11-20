@@ -57,6 +57,8 @@ final class ServerConfig
             }
         }
         return DB::connection()->transaction(function () use ($id,$input,$name,$host,$token,$secret,$settings) {
+            $previous=$id ? Util::unpack(DB::table('mod_whmpve_servers')->where('id',$id)->lockForUpdate()->value('settings')) : [];
+            $settings['onboot']=(bool)($input['onboot'] ?? $previous['onboot'] ?? false);
             $native = ['name'=>$name,'type'=>'whmpve','hostname'=>$host,'ipaddress'=>filter_var($host,FILTER_VALIDATE_IP) ? $host : '',
                 'username'=>$token,'port'=>Util::integer($input['port'] ?? 8006,1,65535,'端口'),'secure'=>'on','active'=>1];
             if ($secret!=='') { $native['password'] = encrypt($secret); }
@@ -66,6 +68,11 @@ final class ServerConfig
                 'settings'=>Util::json($settings),'active'=>array_key_exists('active',$input) ? (int)(bool)$input['active'] : 1,
                 'created_at'=>DB::table('mod_whmpve_servers')->where('id',$id)->value('created_at') ?? Util::now(),'updated_at'=>Util::now(),
             ]);
+            if (!empty($previous['onboot'])!==$settings['onboot']) {
+                DB::table('mod_whmpve_cache')->updateOrInsert(['cache_key'=>'onboot:'.$id],['expires_at'=>0,
+                    'value'=>Util::json(['revision'=>bin2hex(random_bytes(8)),'cursor'=>0,'retry'=>false]),
+                    'created_at'=>Util::now(),'updated_at'=>Util::now()]);
+            }
             return $id;
         });
     }
@@ -80,6 +87,7 @@ final class ServerConfig
         DB::connection()->transaction(function () use ($id) {
             foreach (['addons','plans','images','ips','ip_pools','image_groups','logs'] as $table) { DB::table('mod_whmpve_'.$table)->where('server_id',$id)->delete(); }
             DB::table('mod_whmpve_servers')->where('id',$id)->delete();
+            DB::table('mod_whmpve_cache')->where('cache_key','onboot:'.$id)->delete();
             DB::table('tblservergroupsrel')->where('serverid',$id)->delete();
             DB::table('tblservers')->where('id',$id)->delete();
         });

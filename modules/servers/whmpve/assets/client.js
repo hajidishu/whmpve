@@ -183,6 +183,8 @@
       ipv4:`+${quantity} 个 IPv4`,ipv6:`+${quantity} 个 IPv6`};
     return descriptions[kind];
   }
+  const addonRestartNote='更改配置后需要重新启动vps才能生效';
+  const addonNeedsRestart=({kind})=>state.kind==='qemu'&&['cores','memory_mib'].includes(kind);
   function addons() {
     const {items=[],pending:invoice,purchased=[]}=state.addons||{};
     return `<section class="wmp-card"><div class="wmp-panel-title"><h3>附加服务</h3>
@@ -191,6 +193,7 @@
         <tbody>${items.map(item=>`<tr><td>${esc(item.name)}</td><td>${esc(addonEffect(item))}</td>
         <td>${item.price?esc(item.price)+' · '+(item.kind==='traffic_reset'?'一次性':terms[item.cycle]||'—'):'—'}</td><td>${item.reason?esc(item.reason):canPurchase()?
           `<button type="button" class="wmp-btn" data-buy-addon="${item.id}" data-addon-cycle="${esc(item.cycle)}" ${invoice?'disabled':''}>购买</button>`:'—'}</td></tr>`).join('')}</tbody></table></div>`:''}
+      ${items.some(addonNeedsRestart)?`<p class="wmp-note">${addonRestartNote}</p>`:''}
       ${items.length&&!admin&&!canPurchase()?`<p class="wmp-note">${state.addons.on_behalf?'当前管理员无权代客户购买。':'请使用有服务管理和付款权限的客户账号购买。'}</p>`:''}
       ${purchased.length?`<h3 class="wmp-space">已加购</h3>${purchased.map(item=>row(item.name,esc(item.price)+' · '+(terms[item.cycle]||esc(item.cycle)))).join('')}`:''}</section>`;
   }
@@ -394,6 +397,7 @@
       password?resetPassword():`<p>${esc(dialog.text)}</p>`;
     return `<div class="wmp-modalback"><div class="wmp-modal ${consoleOpen||config?'wmp-wide':''}" role="dialog" aria-modal="true" aria-labelledby="wmp-dialog-title">
       <h3 id="wmp-dialog-title">${esc(dialog.title)}</h3>${content}
+      ${addon&&addonNeedsRestart(addon)?`<p class="wmp-note">${addonRestartNote}</p>`:''}
       ${dialog.error?`<p class="wmp-notice wmp-error wmp-space" role="alert">${esc(dialog.error)}</p>`:''}
       ${addon?'<div class="wmp-notice wmp-error" data-addon-purchase-error role="alert" hidden></div>':''}
       <div class="wmp-modal-actions"><button type="button" class="wmp-btn" data-close>${consoleOpen?'关闭控制台':task?'关闭':'取消'}</button>
@@ -622,8 +626,7 @@
       const price=offer.price+(offer.taxed?'（未税）':'');
       const billing=offer.cycle?`本次 ${price}，以后${terms[offer.cycle]}续费增加 ${price}。`:`一次性支付 ${price}。`;
       const start=offer.starts_billing?'开通后，此 VPS 将按所选账期续费。':'';
-      const restart=offer.kind.startsWith('ipv')?'应用 IP 时，运行中的 VPS 会短暂关机并重新启动。':
-        state.kind==='qemu'&&offer.cycle?'增配可能需要关机再开机才会生效。':'';
+      const restart=offer.kind.startsWith('ipv')?'应用 IP 时，运行中的 VPS 会短暂关机并重新启动。':'';
       dialog={addon:offer,title:state.addons.on_behalf?'代客户购买 · '+offer.name:offer.name,text:`${addonEffect(offer)}。${billing}${start}${restart}`};render();
     }
     else if(b.hasAttribute('data-addon-purchase-confirm')&&canPurchase())purchaseAddon(b);
