@@ -1,10 +1,10 @@
-# Nginx 网页控制台中继部署指南
+# 通过 Nginx 为 Python 网页控制台提供 HTTPS
 
-以下操作在 WHMCS 所在的 Linux 主机执行。先确认 WHMCS 域名可以通过 HTTPS 访问。将 `billing.example.com` 换成 WHMCS 域名，将 `www-data` 换成 WHMCS 站点的 PHP 运行用户。
+在 WHMCS 所在的 Linux 主机执行。Nginx 使用 WHMCS 站点的 HTTPS 证书接收 WSS 连接，再转发给本机的 Python 中继。先确认 WHMCS 域名可以通过 HTTPS 访问。将 `billing.example.com` 换成 WHMCS 域名，将 `www-data` 换成站点的 PHP 运行用户。
 
-## 1. 启动本机中继
+## 1. 启动本机 Python 中继
 
-确认主机已安装 `python3`。下载 WHMPVE 仓库根目录的 `console_gateway.py`，保存到网站根目录之外的 `/opt/whmpve/console_gateway.py`，然后创建 `/etc/systemd/system/whmpve-console.service`。
+确认主机已安装 `python3`。下载 [console_gateway.py](https://github.com/hajidishu/whmpve/blob/main/console_gateway.py)，保存到网站根目录之外的 `/opt/whmpve/console_gateway.py`。创建或更新 `/etc/systemd/system/whmpve-console.service`，让脚本通过 HTTP 监听 `127.0.0.1:8090`。
 
 ```ini
 [Unit]
@@ -23,13 +23,14 @@ WantedBy=multi-user.target
 
 ```sh
 sudo systemctl daemon-reload
-sudo systemctl enable --now whmpve-console.service
+sudo systemctl enable whmpve-console.service
+sudo systemctl restart whmpve-console.service
 curl -fsS http://127.0.0.1:8090/health
 ```
 
 确认返回 `OK`。
 
-## 2. 配置 HTTPS 站点
+## 2. 在 Nginx 的 HTTPS 站点转发 WSS
 
 在 WHMCS 域名对应的 HTTPS `server` 块中加入下面的配置。aaPanel 用户可打开该网站的「配置文件」编辑。 [Nginx WebSocket 文档](https://nginx.org/en/docs/http/websocket.html)
 

@@ -1,10 +1,10 @@
-# Apache2 网页控制台中继部署指南
+# 通过 Apache2 为 Python 网页控制台提供 HTTPS
 
-以下命令以 WHMCS 所在的 Debian 或 Ubuntu 主机为例。使用 Apache 2.4.47 或更新版本，先确认 WHMCS 域名可以通过 HTTPS 访问。将 `billing.example.com` 换成 WHMCS 域名，将 `www-data` 换成 WHMCS 站点的 PHP 运行用户。
+以下命令以 WHMCS 所在的 Debian 或 Ubuntu 主机为例。Apache2 使用 WHMCS 站点的 HTTPS 证书接收 WSS 连接，再转发给本机的 Python 中继。使用 Apache 2.4.47 或更新版本，先确认 WHMCS 域名可以通过 HTTPS 访问。将 `billing.example.com` 换成 WHMCS 域名，将 `www-data` 换成站点的 PHP 运行用户。
 
-## 1. 启动本机中继
+## 1. 启动本机 Python 中继
 
-确认主机已安装 `python3`。下载 WHMPVE 仓库根目录的 `console_gateway.py`，保存到网站根目录之外的 `/opt/whmpve/console_gateway.py`，然后创建 `/etc/systemd/system/whmpve-console.service`。
+确认主机已安装 `python3`。下载 [console_gateway.py](https://github.com/hajidishu/whmpve/blob/main/console_gateway.py)，保存到网站根目录之外的 `/opt/whmpve/console_gateway.py`。创建或更新 `/etc/systemd/system/whmpve-console.service`，让脚本通过 HTTP 监听 `127.0.0.1:8090`。
 
 ```ini
 [Unit]
@@ -23,13 +23,14 @@ WantedBy=multi-user.target
 
 ```sh
 sudo systemctl daemon-reload
-sudo systemctl enable --now whmpve-console.service
+sudo systemctl enable whmpve-console.service
+sudo systemctl restart whmpve-console.service
 curl -fsS http://127.0.0.1:8090/health
 ```
 
 确认返回 `OK`。
 
-## 2. 配置 HTTPS 站点
+## 2. 在 Apache2 的 HTTPS 站点转发 WSS
 
 在 WHMCS 域名对应的 HTTPS `<VirtualHost>` 内加入下面的配置。已有全站 `ProxyPass` 时，把 `/console/` 放在它前面。 [Apache WebSocket 文档](https://httpd.apache.org/docs/2.4/mod/mod_proxy.html#protocolupgrade)
 
