@@ -1,8 +1,14 @@
 # Alpine 3.24 和 Debian 13 精简模板
 
-四份镜像均预装 Cloud-Init 和 QEMU Guest Agent。各镜像的软件包版本见同目录的 `.packages.txt`，下载后可用 `sha256sum -c SHA256SUMS` 校验。
+六份镜像均预装 Cloud-Init 和 QEMU Guest Agent。各镜像的软件包版本见同目录的 `.packages.txt`，下载后可用 `sha256sum -c SHA256SUMS` 校验。
 
-## ARM64 LXC
+| 类型 | 架构 | Alpine 3.24 | Debian 13 |
+| --- | --- | --- | --- |
+| LXC | amd64（x86_64） | `alpine-3.24-cloudinit-qga_amd64.tar.xz` | `debian-13-cloudinit-qga_amd64.tar.zst` |
+| LXC | ARM64 | `alpine-3.24-cloudinit-qga_arm64.tar.xz` | `debian-13-cloudinit-qga_arm64.tar.zst` |
+| KVM | amd64（x86_64） | `alpine-3.24-cloudinit-qga_kvm-amd64.qcow2` | `debian-13-cloudinit-qga_kvm-amd64.qcow2` |
+
+## LXC
 
 1. 把 Alpine 的 `.tar.xz` 或 Debian 的 `.tar.zst` 上传到 PVE 节点的「local → CT Templates」。
 2. 在 WHMPVE 添加 LXC 镜像，模板卷名填写 `local:vztmpl/文件名`。
