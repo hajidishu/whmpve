@@ -34,20 +34,20 @@ done
 
 ### LXC 容器
 
-1. 打开「节点 → local → CT Templates（容器模板）」，点「Templates（模板）」。
-2. 搜索 `alpine`，选一条与节点匹配的模板，点「Download（下载）」。记下下载后的完整文件名。
+1. 下载和 PVE 节点架构匹配的 Alpine 或 Debian LXC 模板。 [镜像下载目录](https://github.com/hajidishu/whmpve/tree/main/templates)
+2. 打开「节点 → local → CT Templates（容器模板）」，在工具栏点「Upload（上传）」。上传后记下完整文件名。
 3. 在下文的 WHMPVE 镜像表单中，把卷名填成 `local:vztmpl/完整文件名`。模板放在其他存储时，替换冒号前的 `local`。
 
-![PVE 的 CT Templates 页面，红框指向容器模板菜单和 Templates 按钮](images/install/pve-lxc-template.png)
+![PVE 的 CT Templates 页面，左侧红框标出存储和容器模板菜单](images/install/pve-lxc-template.png)
 
 ### KVM 虚拟机
 
-1. 在支持 KVM 的 PVE 节点下载所选系统的 Cloud-Init 镜像。下例使用 Debian 13 的 amd64 云镜像，先把它放到 PVE 节点的 `/var/tmp/debian-13-genericcloud-amd64.qcow2`。核对镜像发布方提供的校验值。 [Debian 官方云镜像](https://cloud.debian.org/images/cloud/trixie/latest/)
-2. 在 PVE Shell 执行以下命令。用空闲 VMID 替换 `9000`，按需替换 `vmbr0` 和 `local-lvm`。
+1. 下载 amd64 KVM 镜像并核对 SHA-256。下例使用 Debian 13，把镜像放到 PVE 节点的 `/var/tmp/debian-13-cloudinit-qga_kvm-amd64.qcow2`。 [镜像下载目录](https://github.com/hajidishu/whmpve/tree/main/templates)
+2. 在 PVE Shell 执行以下命令。用空闲 VMID 替换 `9000`，按需替换 `vmbr0` 和 `local-lvm`。选用 Alpine 时，替换镜像文件名并使用 SeaBIOS。
 
 ```sh
 qm create 9000 --name debian-13-cloud --memory 1024 --net0 virtio,bridge=vmbr0 --scsihw virtio-scsi-pci
-qm set 9000 --scsi0 local-lvm:0,import-from=/var/tmp/debian-13-genericcloud-amd64.qcow2
+qm set 9000 --scsi0 local-lvm:0,import-from=/var/tmp/debian-13-cloudinit-qga_kvm-amd64.qcow2
 qm set 9000 --ide2 local-lvm:cloudinit --boot order=scsi0 --serial0 socket --agent enabled=1
 qm template 9000
 ```
@@ -59,7 +59,7 @@ pveum acl modify /vms/9000 --users whmpve@pve --roles PVETemplateUser
 pveum acl modify /vms/9000 --tokens 'whmpve@pve!whmcs' --roles PVETemplateUser
 ```
 
-4. 记下 PVE 左侧模板条目中显示的 VMID，例如 `9000`。KVM Plan 的系统盘不能小于模板磁盘。需要使用 KVM 数据盘自动挂载或客户区重置密码时，制作模板前先在镜像中安装并启用 `qemu-guest-agent`。Debian 镜像的数据盘还需安装 `util-linux`、`fdisk`、`mount`、`e2fsprogs` 和 `coreutils`。 [Proxmox Cloud-Init 文档](https://github.com/proxmox/pve-docs/blob/master/qm-cloud-init.adoc)
+4. 记下 PVE 左侧模板条目中显示的 VMID，例如 `9000`。KVM Plan 的系统盘不能小于模板磁盘。项目提供的 KVM 镜像已预装 Cloud-Init 和 QEMU Guest Agent，Debian 镜像也已包含数据盘挂载所需的软件包。 [Proxmox Cloud-Init 文档](https://github.com/proxmox/pve-docs/blob/master/qm-cloud-init.adoc)
 
 ![PVE KVM 模板，红框指向模板 VMID 和硬件页](images/install/pve-kvm-template.png)
 

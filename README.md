@@ -7,6 +7,7 @@ WHMPVE是一个开源的whmcs对接pve自动化售卖lxc容器和kvm虚拟机的
 ## 安装与使用
 
 - [插件完整部署教程（含配图）](docs/install.md)
+- [LXC 和 KVM 镜像下载](https://github.com/hajidishu/whmpve/tree/main/templates)
 
 ### 网页控制台（任选一种）
 
