@@ -19,6 +19,8 @@
 
 容器默认由 PVE 设置网络和密码。Cloud-Init 默认停用，可在容器内提供本地 NoCloud 配置后自行启用。QEMU Guest Agent 在容器内保持停用。
 
+Debian LXC 预装 `ping`、`curl`、`wget`、`ifconfig`、`vim`、`less`、`sudo` 和 `cron`，`cron` 随系统启动。
+
 ## amd64 KVM
 
 镜像已预装并使用bbr+fq。

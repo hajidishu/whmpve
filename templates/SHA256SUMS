@@ -1,6 +1,6 @@
 598fab6b79395b36d27340ff36a45d43b5a78d966052c4b65ac51e5337afb769  alpine-3.24-cloudinit-qga_arm64.tar.xz
-204b00bba8d8e2b3797475d6103b1ce5ad0a26028ee5153b44b50f849ffd537d  debian-13-cloudinit-qga_arm64.tar.zst
+522eeaaef4aad41bff3b680dec22aea541f0626c0d37b890fe86d9e0e69c1f2a  debian-13-cloudinit-qga_arm64.tar.zst
 be5e6204c06044119ba9310c537659fe1d32c8a2d3250e1bf279e360bd324563  alpine-3.24-cloudinit-qga_kvm-amd64.qcow2
 701413ba375f3b5ef1c7089033e36c27d7bb10cc529385129efaf271678ebf95  debian-13-cloudinit-qga_kvm-amd64.qcow2
 f01cb7abad080d9129188dbf85fe60f3d69474d6bf390e1dcd661b9212c7a930  alpine-3.24-cloudinit-qga_amd64.tar.xz
-b1be8d5d3bc0c0eb61997f13c759b2ebadd914eb20ad9494e0a0eab69a6d38c5  debian-13-cloudinit-qga_amd64.tar.zst
+b8716b4bf8ae56019a4feb37061044980cbb1b1e6e7264d32261a26641aa8815  debian-13-cloudinit-qga_amd64.tar.zst
