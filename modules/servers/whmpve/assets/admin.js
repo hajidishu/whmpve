@@ -274,6 +274,10 @@
       input('名称','name',plan?.name) + input('CPU 核数','cores',spec.cores || 1,'number') +
       input('内存（MiB）','memory_mib',spec.memory_mib || 1024,'number') +
       input('交换内存 Swap（MiB）','swap_mib',spec.swap_mib ?? 0,'number','','仅用于 LXC，0 表示不分配') +
+      `<div class="wmp-field wmp-full" data-plan-nesting hidden>
+        <label class="wmp-inline wmp-check"><input type="checkbox" name="nesting" aria-describedby="wmp-plan-nesting-help" ${(spec.nesting ?? true) ? 'checked' : ''}>允许嵌套</label>
+        <small id="wmp-plan-nesting-help">不开启嵌套会导致某些依赖system的系统无法工作（例如debian）</small>
+      </div>` +
       input('系统盘（GiB）','disk_gib',spec.disk_gib || 10,'number') +
       input('系统盘存储名称','system_storage',spec.system_storage || selectedServer()?.settings.storage || 'local','text','','*请确保名称和pve内存储名称一致') +
       `<section class="wmp-full wmp-disk-list"><details data-disk-panel>
@@ -487,6 +491,8 @@
     form.querySelector('[data-disk-agent]').hidden=!kvm;
     form.elements.swap_mib.disabled=kvm;
     form.elements.swap_mib.closest('label').hidden=kvm;
+    form.elements.nesting.disabled=kind!=='lxc';
+    form.querySelector('[data-plan-nesting]').hidden=kind!=='lxc';
     const speed=form.elements.traffic_speed_kbps;
     speed.closest('label').hidden=form.elements.traffic_action.value === 'suspend';
   }
@@ -516,6 +522,7 @@
         return;
       }
       if (type === 'plan') {
+        if (values.kind==='lxc') values.nesting=fields.has('nesting');
         values.auto_backup=fields.has('auto_backup');
         values.connection_display={private_address:fields.has('private_address'),public_ip:fields.get('public_entry_ip'),port_note:fields.get('port_note')};
         delete values.private_address;

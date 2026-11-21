@@ -345,6 +345,7 @@ final class Pve
             'hostname'=>$instance['hostname'],'memory'=>$spec['memory_mib'],'swap'=>$spec['swap_mib'] ?? 0,'cores'=>$spec['cores'],'cpulimit'=>$spec['cpu_limit'],
             'unprivileged'=>1,'rootfs'=>($spec['system_storage'] ?? $this->settings['storage']).':'.Util::json($spec['disk_gib']),'onboot'=>0,
             'pool'=>$this->settings['pve_pool'],'description'=>self::marker($instance),'password'=>$password,'start'=>0],$this->network($instance,$spec));
+        if (isset($spec['nesting'])) { $data['features']='nesting='.(int)$spec['nesting']; }
         foreach ($spec['data_disks'] ?? [] as $disk) { $data['mp'.($disk['id']-1)]=$disk['storage'].':'.Util::json($disk['size_gib']).',mp='.$disk['mountpoint'].',backup=1'; }
         foreach ($this->request('GET','/cluster/resources',['type'=>'node']) as $node) {
             if (($node['node'] ?? '')!==$this->settings['node']) { continue; }

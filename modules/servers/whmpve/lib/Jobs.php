@@ -435,8 +435,9 @@ final class Job
                 throw $e;
             }
             if (($status['status'] ?? '')==='stopped') {
-                if (($status['exitstatus'] ?? '')!=='OK') {
-                    $exit=(string)($status['exitstatus'] ?? '未知错误');
+                $exit=(string)($status['exitstatus'] ?? '未知错误');
+                $warning=$this->task['action']==='create' && preg_match('/^WARNINGS: [1-9][0-9]*$/D',$exit);
+                if ($exit!=='OK' && !$warning) {
                     if (!empty($operation['recovered']) && ($worker[0] ?? '')==='qmclone') {
                         throw new UnknownPveRequest('待核对：克隆任务以模板编号记录，请确认实际目标 VMID',409);
                     }
@@ -449,7 +450,17 @@ final class Job
                     }
                     throw new Fault('PVE 任务失败：'.$exit);
                 }
-                $this->ctx['done'][$key]=true; $this->save(); return;
+                $this->ctx['done'][$key]=true;
+                if ($warning) {
+                    DB::connection()->transaction(function() use($exit,$operation) {
+                        Util::log('PVE 开通告警 '.$exit.' · '.$operation['upid'],
+                            (int)$this->instance['server_id'],(int)$this->instance['service_id'],'warning');
+                        $this->save();
+                    });
+                } else {
+                    $this->save();
+                }
+                return;
             }
             if ($this->deadline!==null && (!$this->foreground || microtime(true)+0.25>=$this->deadline)) { break; }
             usleep($this->foreground ? 250000 : 700000);
@@ -537,8 +548,12 @@ final class Job
         $actual=$this->pve->request('GET',$owned['path'].'/status/current');
         if (($actual['status'] ?? '')!==$expected) {
             $this->ctx['power_deadline'][$key] ??= time()+15;
+            $expired=time()>=$this->ctx['power_deadline'][$key];
+            if ($expired && $key==='initial-start' && ($actual['status'] ?? '')==='stopped') {
+                unset($this->ctx['done'][$key],$this->ctx['ops'][$key]);
+            }
             $this->save();
-            if (time()>=$this->ctx['power_deadline'][$key]) { throw new Fault('PVE 电源任务已结束，实例未达到目标状态'); }
+            if ($expired) { throw new Fault('PVE 电源任务已结束，实例未达到目标状态'); }
             throw new Pending('等待电源状态同步');
         }
         $this->rememberPower($key,$vmid,$expected);

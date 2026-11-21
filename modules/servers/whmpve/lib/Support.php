@@ -97,7 +97,7 @@ final class Util
 
 final class Schema
 {
-    public const VERSION = '0.5.7';
+    public const VERSION = '0.5.8';
     public static function installed(): bool { return DB::schema()->hasTable('mod_whmpve_servers'); }
 
     public static function install(): void

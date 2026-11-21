@@ -16,6 +16,7 @@ final class Catalog
         if (!in_array($kind,['lxc','qemu'],true)) { throw new Fault('请选择虚拟化类型'); }
         if ($image && $image['kind']!==$kind) { throw new Fault('默认镜像类型与 Plan 类型不一致'); }
         $spec = ['kind'=>$kind]+Disks::spec($input,$server);
+        if ($kind==='lxc') { $spec['nesting']=(bool)($input['nesting'] ?? true); }
         foreach (['cores'=>[1,128,1],'memory_mib'=>[32,1048576,64],'swap_mib'=>[0,1048576,0],
             'bandwidth_mbps'=>[0,100000,100],
             'ipv4_count'=>[0,16,0],'ipv6_count'=>[0,16,0],'reinstall_limit'=>[0,10000,0],
@@ -98,15 +99,15 @@ final class Catalog
         if ($id) { Util::scoped('plans',$id,$server); }
         return DB::connection()->transaction(function () use ($input,$server,$id) {
             DB::table('mod_whmpve_servers')->where('id',$server)->lockForUpdate()->first();
-            $spec = self::spec($input,$server);
             $previous=[];
             if ($id) {
                 $old = DB::table('mod_whmpve_plans')->where('id',$id)->where('server_id',$server)->lockForUpdate()->first()
                     ?? throw new Fault('Plan 不存在',404);
                 $previous=Util::unpack($old->spec);
-                if ($previous['kind']!==$spec['kind'] && in_array($id,self::usedPlans($server),true)) {
-                    throw new Fault('该 Plan 已有订单，更换类型请新建 Plan');
-                }
+            }
+            $spec = self::spec($input+array_intersect_key($previous,['nesting'=>true]),$server);
+            if ($id && $previous['kind']!==$spec['kind'] && in_array($id,self::usedPlans($server),true)) {
+                throw new Fault('该 Plan 已有订单，更换类型请新建 Plan');
             }
             $name = Util::label((string)($input['name'] ?? ''));
             $duplicates = DB::table('mod_whmpve_plans')->where('server_id',$server)->where('name',$name);
