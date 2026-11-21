@@ -122,6 +122,10 @@ ncurses-terminfo-base-6.6_p20260516-r0
 numactl-2.0.19-r0
 openrc-0.63.2-r0
 openrc-user-0.63.2-r0
+openssh-keygen-10.3_p1-r2
+openssh-server-10.3_p1-r2
+openssh-server-common-10.3_p1-r2
+openssh-server-common-openrc-10.3_p1-r2
 partx-2.42.3-r1
 pcre2-10.49-r0
 popt-1.19-r4
