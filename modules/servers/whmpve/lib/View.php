@@ -9,7 +9,7 @@ final class View
     public static function clientTask(array $task): array
     {
         $result = Jobs::public($task);
-        if ($result['error']) { $result['error'] = '任务失败，请联系支持，任务编号 #'.$task['id']; }
+        if ($result['error']) { $result['error'] = Lang::text('message.task_failed_contact_support_with_task').$task['id']; }
         return $result;
     }
 
@@ -21,7 +21,7 @@ final class View
         $instance = DB::table('mod_whmpve_instances')->where('service_id',$service)->first();
         if (!$native || !$instance) {
             return ['service_id'=>$service,'lifecycle'=>'pending','service_status'=>$native->domainstatus ?? 'Pending',
-                'hostname'=>$native->domain ?? '','product_name'=>$native->product_name ?? '云服务器',
+                'hostname'=>$native->domain ?? '','product_name'=>$native->product_name ?? Lang::text('ui.cloud_server'),
                 'spec'=>null,'tasks'=>[],'images'=>[],'network_mode'=>'none','can_manage'=>$canManage]+$admin;
         }
         $i = (array)$instance;
@@ -103,7 +103,7 @@ final class View
 
     public static function metrics(int $service,string $timeframe='hour'): array
     {
-        if (!in_array($timeframe,['hour','day','week','month'],true)) { throw new Fault('时间范围无效'); }
+        if (!in_array($timeframe,['hour','day','week','month'],true)) { throw Fault::localized('message.invalid_time_range'); }
         $i = Jobs::instance($service);
         if (!$i['vmid'] || $i['lifecycle']==='terminated') { return ['status'=>'absent','history'=>[]]; }
         $since = (int)($i['metric_since'] ?: strtotime($i['created_at'].' UTC'));
@@ -152,10 +152,11 @@ final class View
     public static function task(int $id,int $server=0,int $service=0): array
     {
         $task = Util::row('tasks',$id);
-        if ($server && (int)$task['server_id']!==$server) { throw new Fault('任务不属于所选服务器',404); }
-        if ($service && (int)$task['service_id']!==$service) { throw new Fault('任务不属于当前服务',404); }
+        if ($server && (int)$task['server_id']!==$server) { throw Fault::localized('message.this_task_does_not_belong_to_the',404); }
+        if ($service && (int)$task['service_id']!==$service) { throw Fault::localized('message.this_task_does_not_belong_to_the_2',404); }
         $instance = Jobs::instance((int)$task['service_id']);
-        return Jobs::public($task) + ['logs'=>Util::unpack($task['logs']),'attempts'=>$task['attempts'],'actor'=>$task['actor'],
+        $logs=array_map(fn($log)=>['time'=>$log['time'],'message'=>Lang::display($log['message'],$log['translation'] ?? null)],Util::unpack($task['logs']));
+        return Jobs::public($task) + ['logs'=>$logs,'attempts'=>$task['attempts'],'actor'=>$task['actor'],
             'can_retry'=>$task['status']==='failed' && ($instance['lifecycle']!=='terminated' || $task['action']==='backup_delete')];
     }
 
@@ -239,8 +240,8 @@ final class View
         }
         $rows = [];
         foreach ($tasks->orderByDesc('t.id')->limit(100)->get(['t.*','s.name as server_name','i.hostname']) as $row) {
-            $task=(array)$row;
-            $rows[]=Jobs::public($task)+['type'=>'task','server_name'=>$row->server_name,'hostname'=>$row->hostname,'message'=>$row->error ?: $row->stage];
+            $task=Jobs::public((array)$row);
+            $rows[]=$task+['type'=>'task','server_name'=>$row->server_name,'hostname'=>$row->hostname,'message'=>$task['error'] ?: $task['stage']];
         }
         foreach ($logs->orderByDesc('l.id')->limit(100)->get(['l.*','s.name as server_name']) as $row) {
             $rows[]=(array)$row+['type'=>'log','status'=>$row->level,'action'=>'log','updated_at'=>$row->created_at];

@@ -74,7 +74,7 @@ final class Upgrade
             foreach (DB::table('mod_whmpve_ips')->orderByRaw("state = 'free'")->orderBy('id')->get() as $ip) {
                 $address = Ipam::address($ip->address,(int)$ip->family);
                 if (isset($seen[$address])) {
-                    if ($ip->state!=='free') { throw new Fault('升级前请处理重复分配的 IP：'.$address); }
+                    if ($ip->state!=='free') { throw new Fault(Lang::text('message.resolve_duplicate_ip_assignments_before_upgrading').$address); }
                     DB::table('mod_whmpve_ips')->where('id',$ip->id)->delete();
                 } else {
                     $seen[$address] = true;
@@ -123,7 +123,7 @@ final class Upgrade
                     $settings = Util::unpack($pool->settings);
                     foreach ($settings['nodes'] as $node) {
                         $native = (array)DB::table('tblservers')->where('id',$pool->server_id)->first();
-                        if (!$native) { throw new Fault('旧服务器记录不存在：'.$pool->server_id); }
+                        if (!$native) { throw new Fault(Lang::text('message.legacy_server_record_not_found').$pool->server_id); }
                         $id = (int)$native['id'];
                         if (isset($used[$id])) {
                             unset($native['id']);
@@ -142,7 +142,7 @@ final class Upgrade
                 }
                 $servers = array_keys($used);
                 if (!$servers && DB::table('mod_whmpve_images')->exists()) {
-                    throw new Fault('升级前请先配置服务器');
+                    throw Fault::localized('message.configure_the_server_before_upgrading');
                 }
                 $imageMap = self::copyCatalog('images',$servers);
                 $planMap = self::copyCatalog('plans',$servers,$imageMap);

@@ -17,12 +17,12 @@ final class Pve
         $this->serverId=$serverId;
         $this->settings=Util::unpack(ServerConfig::get($serverId)['settings']);
         $s=DB::table('tblservers')->where('id',$serverId)->first();
-        if (!$s || $s->type!=='whmpve') { throw new Fault('PVE 连接不存在'); }
+        if (!$s || $s->type!=='whmpve') { throw Fault::localized('message.pve_connection_not_found'); }
         $this->server=(array)$s;
         $host=trim((string)($s->hostname ?: $s->ipaddress));
-        if (!preg_match('/^[a-zA-Z0-9.:-]+$/',$host)) { throw new Fault('PVE 地址无效'); }
-        $port=Util::integer($s->port ?: 8006,1,65535,'PVE 端口');
-        if (empty($s->secure)) { throw new Fault('PVE 连接必须启用 SSL'); }
+        if (!preg_match('/^[a-zA-Z0-9.:-]+$/',$host)) { throw Fault::localized('message.invalid_pve_address'); }
+        $port=Util::integer($s->port ?: 8006,1,65535,Lang::text('message.pve_port'));
+        if (empty($s->secure)) { throw Fault::localized('message.the_pve_connection_requires_tls'); }
         if (filter_var($host,FILTER_VALIDATE_IP,FILTER_FLAG_IPV6)) { $host='['.$host.']'; }
         $this->base='https://'.$host.':'.$port;
         $this->secret=decrypt((string)$s->password);
@@ -32,11 +32,11 @@ final class Pve
     {
         $remaining=$this->deadline===null ? null : (int)(($this->deadline-microtime(true))*1000);
         if ($remaining!==null && $remaining<=($this->foreground && $method!=='GET' ? 1000 : 100)) {
-            throw new Pending('等待下一轮任务调度');
+            throw new Pending(Lang::text('message.waiting_for_the_next_task_run'));
         }
         $timeoutMs=$timeout*1000;
         if ($this->foreground) { $timeoutMs=min($timeoutMs,$remaining ?? 3000); }
-        if (!preg_match('#^/[a-zA-Z0-9_./{}%-]+$#',$path)) { throw new Fault('非法 API 路径'); }
+        if (!preg_match('#^/[a-zA-Z0-9_./{}%-]+$#',$path)) { throw Fault::localized('message.invalid_api_path'); }
         $url=$this->base.'/api2/json'.$path;
         if (in_array($method,['GET','DELETE'],true) && $data) { $url.='?'.http_build_query($data); }
         $headers=['Accept: application/json'];
@@ -57,13 +57,13 @@ final class Pve
         if (!in_array($method,['GET','DELETE'],true)) { curl_setopt($ch,CURLOPT_POSTFIELDS,$json ? Util::json($data) : http_build_query($data)); }
         $raw=curl_exec($ch); $code=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE); $errno=curl_errno($ch); $error=curl_error($ch); curl_close($ch);
         if ($raw===false && $this->foreground && $method==='GET' && $errno===CURLE_OPERATION_TIMEDOUT) {
-            throw new Pending('等待后台查询 PVE');
+            throw new Pending(Lang::text('message.waiting_for_the_background_request_to_pve'));
         }
-        if ($raw===false) { throw new UnknownPveRequest('PVE 连接失败：'.$error,502); }
-        if (strlen($raw)>8*1024*1024) { throw new UnknownPveRequest('PVE 返回数据过大',502); }
+        if ($raw===false) { throw new UnknownPveRequest(Lang::text('message.could_not_connect_to_pve').$error,502); }
+        if (strlen($raw)>8*1024*1024) { throw UnknownPveRequest::localized('message.the_pve_response_is_too_large',502); }
         $reply=json_decode($raw,true);
         if ($code<200 || $code>=300 || !is_array($reply) || !array_key_exists('data',$reply)) {
-            $detail=is_array($reply['errors'] ?? null) ? Util::json($reply['errors']) : (string)($reply['message'] ?? $reply['errors'] ?? $reason ?: '请检查节点状态和 API 权限');
+            $detail=is_array($reply['errors'] ?? null) ? Util::json($reply['errors']) : (string)($reply['message'] ?? $reply['errors'] ?? $reason ?: Lang::text('message.check_the_node_status_and_api_permissions'));
             foreach ([$this->secret,(string)($data['password'] ?? ''),(string)($data['cipassword'] ?? '')] as $s) {
                 if ($s!=='') { $detail=str_replace([$s,substr(Util::json($s),1,-1)],'[REDACTED]',$detail); }
             }
@@ -87,7 +87,7 @@ final class Pve
     public function permissions(string $path): array
     {
         $result=$this->request('GET','/access/permissions',['path'=>$path]);
-        if (!is_array($result) || !is_array($result[$path] ?? [])) { throw new Fault('PVE 权限查询结果无效',502); }
+        if (!is_array($result) || !is_array($result[$path] ?? [])) { throw Fault::localized('message.pve_returned_an_invalid_permission_result',502); }
         return $result[$path] ?? [];
     }
 
@@ -108,7 +108,7 @@ final class Pve
             if ((string)($task['id'] ?? '')!==$id || !str_ends_with($upid,':'.$this->server['username'].':')) { continue; }
             $matches[$upid]=true;
         }
-        if (count($matches)>1) { throw new Fault('发现多个可能匹配的 PVE 任务，请先核对',409); }
+        if (count($matches)>1) { throw Fault::localized('message.multiple_pve_tasks_may_match_verify_the',409); }
         return array_key_first($matches);
     }
 
@@ -132,7 +132,7 @@ final class Pve
     public function locate(int $vmid): ?array
     {
         $resource=$this->resource($vmid);
-        if ($resource && $resource['node']!==$this->settings['node']) { throw new Fault('实例位于另一节点，请先核对服务器配置'); }
+        if ($resource && $resource['node']!==$this->settings['node']) { throw Fault::localized('message.the_instance_is_on_another_node_check'); }
         return $resource;
     }
     public function resource(int $vmid): ?array
@@ -145,39 +145,39 @@ final class Pve
     }
     public function path(string $node,string $kind,int $vmid): string
     {
-        if ($node!==$this->settings['node'] || !in_array($kind,['lxc','qemu'],true)) { throw new Fault('实例不属于此服务器节点'); }
+        if ($node!==$this->settings['node'] || !in_array($kind,['lxc','qemu'],true)) { throw Fault::localized('message.the_instance_does_not_belong_to_this'); }
         return '/nodes/'.rawurlencode($node).'/'.$kind.'/'.$vmid;
     }
     public function owned(array $instance,?int $vmid=null): ?array
     {
         $vmid=$vmid ?? (int)$instance['vmid'];
-        if ($vmid<$this->settings['vmid_min'] || $vmid>$this->settings['vmid_max']) { throw new Fault('VMID 超出服务器范围'); }
+        if ($vmid<$this->settings['vmid_min'] || $vmid>$this->settings['vmid_max']) { throw Fault::localized('message.the_vmid_is_outside_this_servers_range'); }
         $location=$this->locate($vmid);
         if (!$location) { return null; }
-        if (($location['type'] ?? '')!==$instance['kind']) { throw new IdentityMismatch('实例类型不匹配，已阻止操作',409); }
+        if (($location['type'] ?? '')!==$instance['kind']) { throw IdentityMismatch::localized('message.the_instance_type_did_not_match_the',409); }
         $path=$this->path($location['node'],$instance['kind'],$vmid);
         $config=$this->request('GET',$path.'/config');
-        if (!str_contains((string)($config['description'] ?? ''),self::marker($instance))) { throw new IdentityMismatch('实例身份标识不匹配，已阻止操作',409); }
-        if (!empty($location['pool']) && $location['pool']!==$this->settings['pve_pool']) { throw new Fault('实例已离开受管资源池'); }
+        if (!str_contains((string)($config['description'] ?? ''),self::marker($instance))) { throw IdentityMismatch::localized('message.the_instance_identity_did_not_match_the',409); }
+        if (!empty($location['pool']) && $location['pool']!==$this->settings['pve_pool']) { throw Fault::localized('message.the_instance_is_outside_the_managed_resource'); }
         return ['path'=>$path,'node'=>$location['node'],'config'=>$config,'status'=>$location['status'] ?? 'unknown','vmid'=>$vmid];
     }
     public static function marker(array $instance): string { return 'WHMPVE:'.$instance['service_id'].':'.$instance['uuid']; }
     public function setOnboot(array $owned,bool $enabled): void
     {
         if (!empty($owned['config']['onboot'])===$enabled) { return; }
-        if (!empty($owned['config']['lock'])) { throw new Pending('等待 PVE 实例释放配置锁'); }
+        if (!empty($owned['config']['lock'])) { throw new Pending(Lang::text('message.waiting_for_pve_to_release_the_instance')); }
         try {
             $this->request('PUT',$owned['path'].'/config',['onboot'=>(int)$enabled,'digest'=>$owned['config']['digest']]);
         } catch (PveHttpFault $e) {
             if (str_starts_with($e->detail,'detected modified configuration') || preg_match('/^(?:VM|CT) is locked \(/i',$e->detail)) {
-                throw new Pending('等待重新读取 PVE 实例配置');
+                throw new Pending(Lang::text('message.waiting_to_read_the_pve_instance_configuration'));
             }
             throw $e;
         }
     }
     public static function sizeGib(string $volume): float
     {
-        if (!preg_match('/\bsize=(\d+(?:\.\d+)?)([KMGTPE])\b/',$volume,$m)) { throw new Fault('无法读取系统盘容量，请检查模板配置'); }
+        if (!preg_match('/\bsize=(\d+(?:\.\d+)?)([KMGTPE])\b/',$volume,$m)) { throw Fault::localized('message.could_not_read_the_system_disk_size'); }
         return (float)$m[1]*(['K'=>1/1048576,'M'=>1/1024,'G'=>1,'T'=>1024,'P'=>1048576,'E'=>1073741824][$m[2]]);
     }
     public static function systemDisk(array $config): array
@@ -191,28 +191,28 @@ final class Pve
                 return ['slot'=>$slot,'gib'=>self::sizeGib($config[$slot])];
             }
         }
-        throw new Fault('KVM 模板缺少支持的系统盘');
+        throw Fault::localized('message.the_kvm_template_lacks_a_supported_system');
     }
     public function chooseNode(array $spec,array $image,bool $replacement=false): string
     {
-        if (!ServerConfig::get($this->serverId)['active']) { throw new Fault('服务器已停用'); }
+        if (!ServerConfig::get($this->serverId)['active']) { throw Fault::localized('message.the_server_is_disabled'); }
         $limit=(int)($this->settings['max_instances'] ?? ServerConfig::DEFAULT_LIMITS['max_instances']);
         if (!$replacement && $limit>0 && DB::table('mod_whmpve_instances')->where('server_id',$this->serverId)
-            ->whereNotNull('vmid')->where('lifecycle','!=','terminated')->count()>=$limit) { throw new Fault('服务器实例数量已达到上限'); }
+            ->whereNotNull('vmid')->where('lifecycle','!=','terminated')->count()>=$limit) { throw Fault::localized('message.the_server_has_reached_its_instance_limit'); }
         $node=$this->settings['node'];
         $n=$this->request('GET','/nodes/'.rawurlencode($node).'/status');
         $free=(int)($n['memory']['available'] ?? $n['memory']['free'] ?? 0);
-        if ($free<($spec['memory_mib']+$this->settings['reserve_memory_mib'])*1048576) { throw new Fault('服务器可用内存不足'); }
+        if ($free<($spec['memory_mib']+$this->settings['reserve_memory_mib'])*1048576) { throw Fault::localized('message.there_is_not_enough_available_memory_on'); }
         $needed=[($spec['system_storage'] ?? $this->settings['storage'])=>$spec['disk_gib']];
         if (!$replacement) { foreach ($spec['data_disks'] ?? [] as $disk) { $needed[$disk['storage']]=($needed[$disk['storage']] ?? 0)+$disk['size_gib']; } }
         $available=$this->request('GET','/nodes/'.rawurlencode($node).'/storage',['content'=>$spec['kind']==='lxc' ? 'rootdir' : 'images','enabled'=>1]);
         foreach ($needed as $name=>$size) {
             $entry=array_values(array_filter($available,fn($s)=>$s['storage']===$name))[0] ?? [];
-            if (empty($entry['active']) || ($entry['avail'] ?? 0)<$size*1073741824) { throw new Fault('存储 '.$name.' 不可用、类型不兼容或空间不足'); }
+            if (empty($entry['active']) || ($entry['avail'] ?? 0)<$size*1073741824) { throw Fault::localized('message.storage_unavailable',422,['storage'=>$name]); }
         }
         if ($image['kind']==='lxc') {
             $images=$this->request('GET','/nodes/'.rawurlencode($node).'/storage/'.rawurlencode(explode(':',$image['source'])[0]).'/content',['content'=>'vztmpl']);
-            if (!array_filter($images,fn($x)=>$x['volid']===$image['source'])) { throw new Fault('该服务器上没有所选模板文件'); }
+            if (!array_filter($images,fn($x)=>$x['volid']===$image['source'])) { throw Fault::localized('message.the_selected_template_file_is_not_present'); }
         }
         return $node;
     }
@@ -220,7 +220,7 @@ final class Pve
     {
         $lock='whmpve_vmid_'.$this->serverId;
         $r=DB::select('SELECT GET_LOCK(?, 5) as acquired',[$lock]);
-        if (empty($r[0]->acquired)) { throw new Fault('VMID 分配繁忙，请稍后重试'); }
+        if (empty($r[0]->acquired)) { throw Fault::localized('message.vmid_allocation_is_busy_try_again_shortly'); }
         try {
             $used=array_map(fn($r)=>(int)$r['vmid'],$this->resources());
             $used=array_merge($used,DB::table('mod_whmpve_instances')->where('server_id',$this->serverId)->whereNotNull('vmid')->pluck('vmid')->all());
@@ -228,7 +228,7 @@ final class Pve
             foreach ($liveTasks as $task) { $ctx=Util::unpack($task->context); if (isset($ctx['new_vmid'])) { $used[]=(int)$ctx['new_vmid']; } }
             $used=array_fill_keys(array_map('intval',array_merge($used,$excluded)),true);
             for ($id=$this->settings['vmid_min'];$id<=$this->settings['vmid_max'];$id++) { if (!isset($used[$id])) { return $id; } }
-            throw new Fault('VMID 范围已用尽');
+            throw Fault::localized('message.no_vmids_are_available_in_the_configured');
         } finally { DB::select('SELECT RELEASE_LOCK(?)',[$lock]); }
     }
     public function ips(int $serviceId): array
@@ -340,7 +340,7 @@ final class Pve
     }
     public function createData(array $instance,array $spec,array $image,int $vmid,string $password): array
     {
-        if ($image['kind']!=='lxc') { throw new Fault('错误的创建方式'); }
+        if ($image['kind']!=='lxc') { throw Fault::localized('message.invalid_provisioning_method'); }
         $data=array_merge(['vmid'=>$vmid,'ostemplate'=>$image['source'],
             'hostname'=>$instance['hostname'],'memory'=>$spec['memory_mib'],'swap'=>$spec['swap_mib'] ?? 0,'cores'=>$spec['cores'],'cpulimit'=>$spec['cpu_limit'],
             'unprivileged'=>1,'rootfs'=>($spec['system_storage'] ?? $this->settings['storage']).':'.Util::json($spec['disk_gib']),'onboot'=>0,
@@ -360,23 +360,23 @@ final class Pve
         $s=$this->request('GET','/nodes/'.rawurlencode($this->settings['node']).'/status');
         $storage='/storage/'.($this->settings['backup_storage'] ?? 'local');
         $missing=[];
-        if (empty($this->permissions('/vms')['VM.Backup'])) { $missing[]='/vms 的 VM.Backup（传播）'; }
-        if (!array_key_exists('Datastore.AllocateSpace',$this->permissions($storage))) { $missing[]=$storage.' 的 Datastore.AllocateSpace'; }
+        if (empty($this->permissions('/vms')['VM.Backup'])) { $missing[]=Lang::text('message.propagated_vm_backup_on_vms'); }
+        if (!array_key_exists('Datastore.AllocateSpace',$this->permissions($storage))) { $missing[]=$storage.Lang::text('message.datastore_allocatespace'); }
         return ['version'=>$version['version'],'node'=>$this->settings['node'],'memory_total'=>$s['memory']['total'],'memory_used'=>$s['memory']['used'],
             'backup_missing'=>$missing];
     }
     public function consoleTicket(array $instance,string $mode): array
     {
         $owned=$this->owned($instance);
-        if (!$owned || ($this->request('GET',$owned['path'].'/status/current')['status'] ?? '')!=='running') { throw new Fault('实例运行后才能打开控制台'); }
-        if (!$this->settings['console_user'] || !$this->settings['console_password'] || !$this->settings['console_url']) { throw new Fault('管理员尚未配置控制台连接'); }
+        if (!$owned || ($this->request('GET',$owned['path'].'/status/current')['status'] ?? '')!=='running') { throw Fault::localized('message.start_the_instance_before_opening_the_console'); }
+        if (!$this->settings['console_user'] || !$this->settings['console_password'] || !$this->settings['console_url']) { throw Fault::localized('message.the_administrator_has_not_configured_the_console'); }
         $endpoint = $mode==='novnc' ? '/vncproxy' : '/termproxy';
         $params = $mode==='novnc' ? ['websocket'=>1] : [];
         if ($mode==='xterm' && $instance['kind']==='qemu') {
             foreach (['serial0','serial1','serial2','serial3'] as $serial) {
                 if (($owned['config'][$serial] ?? '')==='socket') { $params['serial']=$serial; break; }
             }
-            if (!$params) { throw new Fault('请联系管理员为虚拟机添加串口，或使用 noVNC'); }
+            if (!$params) { throw Fault::localized('message.ask_the_administrator_to_add_a_serial'); }
         }
         $ticket=$this->request('POST','/access/ticket',['username'=>$this->settings['console_user'],'password'=>decrypt($this->settings['console_password'])]);
         $proxy=$this->request('POST',$owned['path'].$endpoint,$params,$ticket);

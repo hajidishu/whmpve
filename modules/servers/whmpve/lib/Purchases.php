@@ -30,22 +30,22 @@ final class Purchases
 
     public static function prices(mixed $input,string $kind): array
     {
-        if (!is_array($input)) { throw new Fault('请输入有效的附加服务价格'); }
+        if (!is_array($input)) { throw Fault::localized('message.enter_a_valid_add_on_price'); }
         $currencies=array_column(self::currencies(),'code','id');
         $terms=Addons::priceTerms($kind);
         $prices=[];
         foreach ($input as $id=>$value) {
-            if (!isset($currencies[$id])) { throw new Fault('币种无效'); }
+            if (!isset($currencies[$id])) { throw Fault::localized('message.invalid_currency'); }
             if (is_array($value)) {
                 foreach ($value as $term=>$price) {
-                    if (!in_array($term,$terms,true)) { throw new Fault('计费周期无效'); }
+                    if (!in_array($term,$terms,true)) { throw Fault::localized('message.invalid_billing_cycle'); }
                     if ($price==='') { continue; }
-                    $prices[$id][$term]=self::amount($price) ?? throw new Fault('价格请输入正数，最多两位小数');
+                    $prices[$id][$term]=self::amount($price) ?? throw Fault::localized('message.enter_a_positive_price_with_up_to');
                 }
                 continue;
             }
             if ($value==='') { continue; }
-            $prices[$id]=self::amount($value) ?? throw new Fault('价格请输入正数，最多两位小数');
+            $prices[$id]=self::amount($value) ?? throw Fault::localized('message.enter_a_positive_price_with_up_to');
         }
         return $prices;
     }
@@ -90,7 +90,7 @@ final class Purchases
                 $effect=Addons::effect((object)$addon,$service,$term);
                 $amount=$prices[$effect['cycle'] ?? 'once'] ?? null;
                 $reason=$amount ? Addons::reason($instance,$service,$spec,$effect,$traffic)
-                    : ($prices ? '当前账期未设置价格' : '当前币种未设置价格');
+                    : ($prices ? Lang::text('message.no_price_is_set_for_this_billing') : Lang::text('message.no_price_is_set_for_this_currency'));
                 $reason ??= self::availability((object)$addon,$effect);
                 $items[]=['id'=>(int)$addon['id'],'name'=>$addon['name'],'kind'=>$effect['kind'],'quantity'=>$effect['quantity'],
                     'cycle'=>$effect['cycle'],'starts_billing'=>$startsBilling,'stock'=>$addon['stock']===null ? null : (int)$addon['stock'],
@@ -106,53 +106,53 @@ final class Purchases
 
     private static function availability(object $addon,array $effect): ?string
     {
-        if ($addon->stock!==null && (int)$addon->stock===0) { return '已售罄'; }
+        if ($addon->stock!==null && (int)$addon->stock===0) { return Lang::text('message.sold_out'); }
         if (Addons::family($effect['kind']) && Ipam::freeForAddon((int)$addon->server_id,$effect)->count()<$effect['quantity']) {
-            return '可用 IP 地址不足';
+            return Lang::text('message.not_enough_free_ip_addresses');
         }
         return null;
     }
 
     public static function purchase(int $service,array $identity,array $quote): array
     {
-        if (!Util::enabled() || !self::available()) { throw new Fault('附加服务暂不可用',503); }
+        if (!Util::enabled() || !self::available()) { throw Fault::localized('message.add_ons_are_temporarily_unavailable',503); }
         return DB::connection()->transaction(function () use ($service,$identity,$quote) {
             $instance=DB::table('mod_whmpve_instances')->where('service_id',$service)->lockForUpdate()->first();
             $native=self::service($service);
             $client=$identity['id'];
-            if (!$instance || !$native || (int)$native->userid!==$client) { throw new Fault('服务不存在',404); }
+            if (!$instance || !$native || (int)$native->userid!==$client) { throw Fault::localized('message.service_not_found',404); }
             Catalog::assertServerBinding((array)$instance,(int)$native->server);
             $admin=str_starts_with($identity['subject'],'admin:') ? (int)substr($identity['subject'],6) : 0;
-            if (!Http::purchaseAccess($identity,true)) { throw new Fault($admin ? '当前管理员无权代客户购买' : '需要服务管理和账单付款权限',403); }
+            if (!Http::purchaseAccess($identity,true)) { throw new Fault($admin ? Lang::text('message.this_administrator_cannot_buy_on_behalf_of') : Lang::text('message.service_management_and_invoice_payment_permissions_are'),403); }
             $account=DB::table('tblclients')->where('id',$client)->lockForUpdate()->first();
-            if (!$account || $account->status==='Closed') { throw new Fault('账户不可用',403); }
+            if (!$account || $account->status==='Closed') { throw Fault::localized('message.account_unavailable',403); }
             $currency=(int)$account->currency;
             $now=time();
             $usage=Traffic::row($service);
             $cycle=Traffic::cycle(Traffic::anchorDay($service,$usage),$now);
             if (($quote['currency'] ?? null)!==$currency) {
-                throw new Fault('购买信息已更新，请刷新后重试',409);
+                throw Fault::localized('message.the_purchase_details_changed_refresh_and_try',409);
             }
             $spec=Util::unpack($instance->applied ?: $instance->desired);
             $addonId=(int)($quote['addon_id'] ?? 0);
             $term=$quote['cycle'] ?? null;
-            if ($term!==null && !is_string($term)) { throw new Fault('计费周期无效'); }
+            if ($term!==null && !is_string($term)) { throw Fault::localized('message.invalid_billing_cycle'); }
             $pending=self::pending((array)$instance,$client,$currency,$cycle,$now);
             if ($pending) {
                 if ((int)$pending->addon_id!==$addonId || ($term!==null && $term!==(self::effect($pending)['cycle'] ?? null))) {
-                    throw new Fault('请先处理此 VPS 的附加服务账单',409);
+                    throw Fault::localized('message.resolve_the_pending_add_on_invoice_for',409);
                 }
                 return ['invoice_id'=>(int)$pending->invoice_id];
             }
             Ipam::lockServer((int)$instance->server_id);
             $addon=DB::table('mod_whmpve_addons')->where('id',$addonId)->where('server_id',$instance->server_id)
                 ->where('plan_id',$instance->plan_id)->where('active',true)->lockForUpdate()->first();
-            if (!$addon) { throw new Fault('此附加服务不可购买',404); }
+            if (!$addon) { throw Fault::localized('message.this_add_on_is_unavailable_for_purchase',404); }
             $effect=Addons::effect($addon,$native,$term);
             $traffic=$effect['kind']==='traffic_reset';
             $period=$traffic ? $cycle['period'] : '';
             if (($quote['period'] ?? null)!==$period || ($quote['revision'] ?? null)!==self::revision($effect)) {
-                throw new Fault('购买信息已更新，请刷新后重试',409);
+                throw Fault::localized('message.the_purchase_details_changed_refresh_and_try',409);
             }
             $used=$usage && $usage['period']===$cycle['period'] ? $usage : ['incoming'=>0,'outgoing'=>0];
             if ($reason=Addons::reason((array)$instance,$native,$spec,$effect,$used) ?? self::availability($addon,$effect)) {
@@ -160,12 +160,14 @@ final class Purchases
             }
             $prices=Addons::priceOptions($effect['kind'],Util::unpack($addon->prices)[$currency] ?? null,$native->billingcycle==='Free Account');
             $amount=$prices[$effect['cycle'] ?? 'once'] ?? null;
-            if (!$amount) { throw new Fault($prices ? '当前账期未设置价格' : '当前币种未设置价格',409); }
-            if (($quote['amount'] ?? null)!==$amount) { throw new Fault('价格已更新，请刷新后重试',409); }
+            if (!$amount) { throw new Fault($prices ? Lang::text('message.no_price_is_set_for_this_billing') : Lang::text('message.no_price_is_set_for_this_currency'),409); }
+            if (($quote['amount'] ?? null)!==$amount) { throw Fault::localized('message.the_price_changed_refresh_and_try_again',409); }
             $expires=$traffic ? min($cycle['end'],$now+self::HOLD_SECONDS) : $now+self::HOLD_SECONDS;
-            $description=$effect['name'].' · '.$instance->hostname.' · 服务 #'.$service;
-            $description.=$traffic ? ' · '.$effect['quantity'].'%' : ' · 每'.Addons::TERMS[$effect['cycle']].'个月';
-            $description.=' · '.date('Y-m-d H:i',$expires).' 前付款';
+            $language=(string)($account->language ?: \WHMCS\Config\Setting::getValue('Language'));
+            $description=implode(' · ',[$effect['name'],$instance->hostname,
+                Lang::text('message.add_on_invoice_service',['service'=>$service],$language),
+                $traffic ? $effect['quantity'].'%' : Lang::text('message.add_on_invoice_term',['months'=>Addons::TERMS[$effect['cycle']]],$language),
+                Lang::text('message.add_on_invoice_deadline',['date'=>date('Y-m-d H:i',$expires)],$language)]);
             $invoice=(int)Util::moduleApi('CreateInvoice',[
                 'userid'=>$client,'autoapplycredit'=>false,'sendinvoice'=>false,'paymentmethod'=>$native->paymentmethod,
                 'date'=>date('Y-m-d',$now),'duedate'=>date('Y-m-d',$expires-1),
@@ -174,9 +176,9 @@ final class Purchases
             ])['invoiceid'];
             $item=self::singleItem($invoice);
             if (!$item || self::amount($item->amount)!==$amount || $item->type==='Hosting' || $item->relid) {
-                throw new Fault('无法核对附加服务账单明细');
+                throw Fault::localized('message.could_not_verify_the_add_on_invoice');
             }
-            if (time()>=$expires) { throw new Fault('购买信息已过期，请刷新后重试',409); }
+            if (time()>=$expires) { throw Fault::localized('message.the_purchase_details_expired_refresh_and_try',409); }
             if (Addons::family($effect['kind'])) { $effect['addresses']=Ipam::holdForAddon((int)$instance->server_id,$effect,$invoice); }
             if ($addon->stock!==null) { DB::table('mod_whmpve_addons')->where('id',$addonId)->decrement('stock'); }
             DB::table('mod_whmpve_traffic_resets')->insert([
@@ -186,7 +188,10 @@ final class Purchases
                 'period'=>$period,'expires_at'=>$expires,'state'=>'open',
                 'created_at'=>gmdate('Y-m-d H:i:s',$now),'updated_at'=>Util::now(),
             ]);
-            if ($admin) { Util::log("管理员 #$admin 为客户 #$client 购买附加服务，账单 #$invoice",(int)$instance->server_id,$service,'info'); }
+            if ($admin) {
+                Util::log(Lang::text('message.add_on_purchase_log',['admin'=>$admin,'client'=>$client,'invoice'=>$invoice]),
+                    (int)$instance->server_id,$service,'info');
+            }
             return ['invoice_id'=>$invoice];
         });
     }
@@ -235,7 +240,7 @@ final class Purchases
             ->orderBy('updated_at')->orderBy('id')->limit(50)->pluck('invoice_id');
         foreach ($ids as $invoice) {
             try { self::reconcileInvoice((int)$invoice); }
-            catch (\Throwable $e) { Util::log('附加服务账单 #'.$invoice.'：'.$e->getMessage()); }
+            catch (\Throwable $e) { Util::log(Lang::text('message.add_on_invoice').$invoice.'：'.$e->getMessage()); }
         }
     }
 
@@ -243,7 +248,7 @@ final class Purchases
     {
         if (!$reset->task_id) { self::release($reset); }
         self::set($reset,['state'=>'review']);
-        Util::log('附加服务账单 #'.$reset->invoice_id.' 待处理：'.$reason,(int)$reset->server_id,(int)$reset->service_id,'warning');
+        Util::log(Lang::text('message.add_on_invoice').$reset->invoice_id.Lang::text('message.requires_review').$reason,(int)$reset->server_id,(int)$reset->service_id,'warning');
     }
 
     private static function release(object $purchase): void
@@ -301,16 +306,16 @@ final class Purchases
             $invoice=Invoice::where('id',$id)->lockForUpdate()->first();
             $window=self::window($reset,Traffic::anchorDay((int)$binding->service_id));
             if (!$invoice || $invoice->status==='Refunded') {
-                if ($reset->task_id && $reset->period==='') { self::review($reset,'请核对已执行的配置任务和付款'); return; }
+                if ($reset->task_id && $reset->period==='') { self::review($reset,Lang::text('message.check_the_applied_configuration_task_and_payment')); return; }
                 self::release($reset);
                 self::set($reset,['state'=>'closed']);
                 return;
             }
             if ($invoice->status!=='Paid') {
-                if ($reset->task_id && $reset->period==='') { self::review($reset,'请核对已执行的配置任务和付款'); return; }
+                if ($reset->task_id && $reset->period==='') { self::review($reset,Lang::text('message.check_the_applied_configuration_task_and_payment')); return; }
                 $within=self::inWindow($window,time()) && (empty($reset->addon_id) || time()<(int)$reset->expires_at);
-                $reason=$within ? self::invalidBinding($reset,$instance,$native,$invoice) : '账单已过期';
-                if (!$reason && in_array($invoice->status,['Cancelled','Collections'],true)) { $reason='账单已关闭'; }
+                $reason=$within ? self::invalidBinding($reset,$instance,$native,$invoice) : Lang::text('message.the_invoice_expired');
+                if (!$reason && in_array($invoice->status,['Cancelled','Collections'],true)) { $reason=Lang::text('message.the_invoice_was_closed'); }
                 if (!$reason) { self::set($reset,[]); return; }
                 $funded=(float)$invoice->credit>0 || self::payments(DB::table('tblaccounts')->where('invoiceid',$id))
                     ->lockForUpdate()->first(['id']);
@@ -320,11 +325,11 @@ final class Purchases
                     return;
                 }
                 if ((int)$invoice->userid!==(int)$reset->client_id || !self::invoiceMatches($reset)) {
-                    self::review($reset,$reason.'，请核对变更后的账单');
+                    self::review($reset,$reason.Lang::text('message.check_the_amended_invoice'));
                     return;
                 }
                 if ($funded || $invoice->status==='Payment Pending') {
-                    self::review($reset,$reason.'，请核对在途款项或部分付款');
+                    self::review($reset,$reason.Lang::text('message.check_for_pending_or_partial_payments'));
                     return;
                 }
                 if ($invoice->status==='Unpaid') {
@@ -334,7 +339,7 @@ final class Purchases
                             else { Util::moduleApi('UpdateInvoice',['invoiceid'=>$id,'status'=>'Cancelled']); }
                         });
                     } catch (\Throwable $e) {
-                        self::review($reset,'请在 WHMCS 检查并取消账单：'.$e->getMessage());
+                        self::review($reset,Lang::text('message.review_and_cancel_the_invoice_in_whmcs').$e->getMessage());
                         return;
                     }
                 }
@@ -342,7 +347,7 @@ final class Purchases
                 self::set($reset,['state'=>'closed']);
                 return;
             }
-            if ($reset->state==='closed') { self::review($reset,'已关闭账单收到付款，请核对退款'); return; }
+            if ($reset->state==='closed') { self::review($reset,Lang::text('message.a_closed_invoice_received_payment_review_the')); return; }
             if ($reason=self::invalid($reset,$instance,$native,$invoice,$window)) { self::review($reset,$reason); return; }
             $action=$reset->period==='' ? 'addon_apply' : 'traffic_reset';
             try {
@@ -366,11 +371,11 @@ final class Purchases
 
     private static function invalid(object $reset,?object $instance,?object $native,?Invoice $invoice,?array $window): ?string
     {
-        if (!self::inWindow($window,time())) { return '账单流量周期已结束，请核对退款'; }
-        if (!$invoice || $invoice->status!=='Paid' || $invoice->hasRemainingBalanceDue()) { return '请核对账单付款状态'; }
+        if (!self::inWindow($window,time())) { return Lang::text('message.the_traffic_period_for_this_invoice_ended'); }
+        if (!$invoice || $invoice->status!=='Paid' || $invoice->hasRemainingBalanceDue()) { return Lang::text('message.check_the_invoice_payment_status'); }
         $paid=strtotime((string)$invoice->getRawOriginal('datepaid'));
         if ($paid===false || !self::inWindow($window,$paid) || (!empty($reset->addon_id) && $paid>=(int)$reset->expires_at)) {
-            return '付款时间超出账单有效期，请核对退款';
+            return Lang::text('message.payment_was_made_after_the_invoice_expired');
         }
         return self::invalidBinding($reset,$instance,$native,$invoice);
     }
@@ -381,14 +386,14 @@ final class Purchases
             || (int)$native->server!==(int)$instance->server_id || $instance->uuid!==$reset->instance_uuid
             || (int)$native->userid!==(int)$reset->client_id || Addons::reason((array)$instance,$native,
                 Util::unpack($instance->applied ?: $instance->desired),self::effect($reset),null)) {
-            return '服务归属或配置已变更，请核对退款';
+            return Lang::text('message.the_service_ownership_or_configuration_changed_review');
         }
         $account=DB::table('tblclients')->where('id',$reset->client_id)->lockForUpdate()->first(['currency','status']);
         if (!$account || $account->status==='Closed' || (int)$account->currency!==(int)$reset->currency_id
             || (int)$invoice->userid!==(int)$reset->client_id) {
-            return '请核对账单归属和币种';
+            return Lang::text('message.check_the_invoice_owner_and_currency');
         }
-        return self::invoiceMatches($reset) ? null : '账单明细已变更，请核对账单';
+        return self::invoiceMatches($reset) ? null : Lang::text('message.the_invoice_items_changed_review_the_invoice');
     }
 
     private static function invoiceMatches(object $reset): bool
@@ -413,39 +418,39 @@ final class Purchases
         $service=(int)$instance['service_id'];
         $reset=DB::table('mod_whmpve_traffic_resets')->where('invoice_id',$invoiceId)->where('service_id',$service)
             ->where('server_id',$instance['server_id'])->where('instance_uuid',$instance['uuid'])->first();
-        if (!$reset || !in_array($reset->state,['open','applied'],true)) { throw new Fault('流量重置账单已关闭，请核对收款'); }
+        if (!$reset || !in_array($reset->state,['open','applied'],true)) { throw Fault::localized('message.the_traffic_reset_invoice_was_closed_verify'); }
         if ($reset->state==='applied') {
             $row=Traffic::row($service);
             return (int)($row['reset_invoice'] ?? 0)===$invoiceId
                 && self::inWindow(self::window($reset,Traffic::anchorDay($service,$row)),time());
         }
-        $owned=$pve->owned($instance) ?: throw new Fault('流量重置未找到实例');
+        $owned=$pve->owned($instance) ?: throw Fault::localized('message.no_instance_was_found_for_this_traffic');
         $current=$pve->request('GET',$owned['path'].'/status/current');
         if (!in_array($current['status'] ?? '',['running','stopped'],true)
             || ($current['status']==='running' && !isset($current['netin'],$current['netout'],$current['uptime']))) {
-            throw new Fault('未能采集当前实例流量，请重试');
+            throw Fault::localized('message.could_not_collect_the_instances_current_traffic');
         }
         $at=time();
         $error=DB::connection()->transaction(function() use($instance,$current,$at,$service,$reset,$invoiceId) {
             $binding=DB::table('mod_whmpve_instances')->where('service_id',$service)->lockForUpdate()->first();
             $native=self::service($service);
             $locked=DB::table('mod_whmpve_traffic_resets')->where('id',$reset->id)->lockForUpdate()->first();
-            if (!$locked || $locked->state!=='open') { return '流量重置账单已关闭，请核对收款'; }
+            if (!$locked || $locked->state!=='open') { return Lang::text('message.the_traffic_reset_invoice_was_closed_verify'); }
             $invoice=Invoice::where('id',$invoiceId)->lockForUpdate()->first();
             $day=Traffic::anchorDay($service);
             $window=self::window($locked,$day);
             if ($reason=self::invalid($locked,$binding,$native,$invoice,$window)) { self::review($locked,$reason); return $reason; }
             if ((int)$binding->vmid!==(int)$instance['vmid'] || $binding->node!==$instance['node']) {
-                throw new Fault('未能采集当前实例流量，请重试');
+                throw Fault::localized('message.could_not_collect_the_instances_current_traffic');
             }
             if (!self::inWindow($window,$at) || !self::inWindow($window,time())) {
-                $reason='账单流量周期已结束，请核对退款';
+                $reason=Lang::text('message.the_traffic_period_for_this_invoice_ended');
                 self::review($locked,$reason);
                 return $reason;
             }
             $usage=Traffic::record($instance,$current,$at);
             if ((int)$usage['anchor_day']!==$day || $usage['period']!==$window['period']) {
-                throw new Fault('流量周期已变更，请重试',409);
+                throw Fault::localized('message.the_traffic_period_changed_try_again',409);
             }
             $quota=(int)round(Util::unpack($binding->applied ?: $binding->desired)['traffic_gb']*1000000000);
             [$incoming,$outgoing]=self::restoreUsage((int)$usage['incoming'],(int)$usage['outgoing'],$quota,self::effect($locked)['quantity']);
@@ -476,7 +481,7 @@ final class Purchases
             $purchase=DB::table('mod_whmpve_traffic_resets')->where('invoice_id',$invoiceId)->where('service_id',$service)
                 ->where('server_id',$instance['server_id'])->where('instance_uuid',$instance['uuid'])->where('period','')
                 ->lockForUpdate()->first();
-            if (!$purchase || !in_array($purchase->state,['open','applied'],true)) { throw new Fault('附加服务账单待核对'); }
+            if (!$purchase || !in_array($purchase->state,['open','applied'],true)) { throw Fault::localized('message.the_add_on_invoice_needs_review'); }
             $effect=self::effect($purchase);
             if ($purchase->state==='applied') { return $effect; }
             $invoice=Invoice::where('id',$invoiceId)->lockForUpdate()->first();

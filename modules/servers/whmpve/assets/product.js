@@ -3,6 +3,7 @@
   const configElement = document.getElementById('whmpve-product-config');
   if (!configElement) return;
   const config = JSON.parse(configElement.textContent);
+  const {t:tr} = window.whmpveI18n(config.i18n);
   const initialized = new WeakSet();
   let pending;
 
@@ -18,17 +19,17 @@
     async function load(selected = 0) {
       pending?.abort();
       pending = new AbortController();
-      plan.replaceChildren(new Option(server.value === '0' ? '先选择服务器' : '加载中…', '0'));
+      plan.replaceChildren(new Option(server.value === '0' ? tr('ui.select_a_server_first') : tr('ui.loading'), '0'));
       plan.disabled = true;
       if (server.value === '0') return;
       try {
         const query = new URLSearchParams({scope:'admin',op:'plans',server_id:server.value});
         const response = await fetch(`${config.base}/api.php?${query}`, {credentials:'same-origin',signal:pending.signal});
         const result = await response.json();
-        if (!response.ok || !result.ok) throw new Error(result.error || '无法加载 Plan');
-        plan.replaceChildren(new Option('选择 Plan', '0'));
+        if (!response.ok || !result.ok) throw new Error(result.error || tr('ui.could_not_load_plans'));
+        plan.replaceChildren(new Option(tr('ui.select_a_plan'), '0'));
         for (const item of result.data.plans) {
-          const option = new Option(item.name + ' · ' + (item.spec.kind==='lxc' ? 'LXC' : 'KVM') + (item.active ? '' : '（停用）'), String(item.id));
+          const option = new Option(item.name + ' · ' + (item.spec.kind==='lxc' ? 'LXC' : 'KVM') + (item.active ? '' : tr('ui.disabled_3')), String(item.id));
           option.disabled = !item.active && item.id !== Number(selected);
           plan.add(option);
         }

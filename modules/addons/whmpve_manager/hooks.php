@@ -36,6 +36,10 @@ if (!defined('WHMPVE_HOOKS_REGISTERED')) {
         }
         return array_values(array_unique($errors));
     });
+    add_hook('ClientAreaPageCart',1,function($vars) {
+        if (empty($vars['customfields']) || !is_array($vars['customfields']) || !\Whmpve\Schema::installed()) { return []; }
+        return ['customfields'=>\Whmpve\Disks::cartFields($vars['customfields'],(string)($vars['language'] ?? ''))];
+    });
     $freeze=function(int $order): void {
         if (!\Whmpve\Schema::installed()) { return; }
         try { \Whmpve\Catalog::freezeOrder($order); }
@@ -72,9 +76,13 @@ if (!defined('WHMPVE_HOOKS_REGISTERED')) {
         }
         $config=['base'=>\Whmpve\Util::base().'/modules/servers/whmpve','token'=>\Whmpve\Http::csrf('admin'),
             'server'=>$product && $product->servertype==='whmpve' ? (int)$product->configoption1 : 0,
-            'plan'=>$product && $product->servertype==='whmpve' ? (int)$product->configoption2 : 0];
+            'plan'=>$product && $product->servertype==='whmpve' ? (int)$product->configoption2 : 0,
+            'i18n'=>\Whmpve\Lang::browser('admin')];
+        $assets=\Whmpve\Util::html($config['base']).'/assets/';
+        $version=\Whmpve\Schema::VERSION;
         return '<script id="whmpve-product-config" type="application/json">'.json_encode($config,JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT).'</script>'
-            .'<script src="'.\Whmpve\Util::html($config['base']).'/assets/product.js?v=0.4.0" defer></script>';
+            .'<script src="'.$assets.'i18n.js?v='.$version.'" defer></script>'
+            .'<script src="'.$assets.'product.js?v='.$version.'" defer></script>';
     });
     add_hook('ClientAreaPrimarySidebar',1,function($sidebar) {
         if (($_GET['action'] ?? '')!=='productdetails' || !\Whmpve\Schema::installed()) { return; }

@@ -11,7 +11,7 @@ final class Traffic
     public static function quota(mixed $value): float
     {
         if (!is_numeric($value) || !is_finite((float)$value) || $value<0 || $value>100000000) {
-            throw new Fault('月流量额度请输入 0 至 100000000 之间的数值');
+            throw Fault::localized('message.enter_a_monthly_traffic_quota_between_0');
         }
         return (float)$value;
     }
@@ -107,7 +107,7 @@ final class Traffic
     public static function sample(array $instance,Pve $pve,?array $current=null): array
     {
         if ($current===null) {
-            $owned=$pve->owned($instance) ?: throw new Fault('流量采样未找到实例');
+            $owned=$pve->owned($instance) ?: throw Fault::localized('message.could_not_find_the_instance_for_traffic');
             $current=$pve->request('GET',$owned['path'].'/status/current');
         }
         return self::record($instance,$current);

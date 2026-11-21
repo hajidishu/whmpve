@@ -6,9 +6,18 @@ use WHMCS\Database\Capsule as DB;
 
 class Fault extends \RuntimeException
 {
+    public ?array $translation = null;
+
     public function __construct(string $message, public readonly int $http = 422)
     {
         parent::__construct($message);
+    }
+
+    public static function localized(string $key,int $http=422,array $values=[]): static
+    {
+        $fault=new static(Lang::text($key,$values),$http);
+        $fault->translation=['key'=>$key,'values'=>$values];
+        return $fault;
     }
 }
 final class IdentityMismatch extends Fault {}
@@ -39,7 +48,7 @@ final class Util
     public static function integer(mixed $value, int $min, int $max, string $name): int
     {
         if (filter_var($value, FILTER_VALIDATE_INT) === false || (int)$value < $min || (int)$value > $max) {
-            throw new Fault("{$name}：请输入 {$min}–{$max}");
+            throw new Fault(Lang::text('message.range_required',['field'=>$name,'min'=>$min,'max'=>$max]));
         }
         return (int)$value;
     }
@@ -48,7 +57,7 @@ final class Util
     {
         $value = trim($value);
         if ($value === '' || mb_strlen($value) > $max || preg_match('/[\x00-\x1f]/', $value)) {
-            throw new Fault('请输入有效名称');
+            throw Fault::localized('message.enter_a_valid_name');
         }
         return $value;
     }
@@ -56,14 +65,14 @@ final class Util
     public static function row(string $table, int $id): array
     {
         $row = DB::table('mod_whmpve_'.$table)->where('id', $id)->first();
-        if (!$row) { throw new Fault('记录不存在', 404); }
+        if (!$row) { throw Fault::localized('message.record_not_found', 404); }
         return (array)$row;
     }
 
     public static function scoped(string $table, int $id, int $server): array
     {
         $row = self::row($table, $id);
-        if ((int)$row['server_id'] !== $server) { throw new Fault('记录不属于所选服务器', 404); }
+        if ((int)$row['server_id'] !== $server) { throw Fault::localized('message.this_record_does_not_belong_to_the', 404); }
         return $row;
     }
 
@@ -86,7 +95,7 @@ final class Util
     public static function moduleApi(string $command, array $data): array
     {
         $admin = DB::table('tbladmins')->where('roleid', 1)->where('disabled', 0)->value('username');
-        if (!$admin) { throw new Fault('请配置可执行自动化的管理员账户'); }
+        if (!$admin) { throw Fault::localized('message.configure_an_administrator_account_authorized_to_run'); }
         $result = localAPI($command, $data, $admin);
         if (($result['result'] ?? '') !== 'success') {
             throw new Fault('WHMCS：'.($result['message'] ?? $command));
@@ -97,7 +106,7 @@ final class Util
 
 final class Schema
 {
-    public const VERSION = '0.5.8';
+    public const VERSION = '0.5.9';
     public static function installed(): bool { return DB::schema()->hasTable('mod_whmpve_servers'); }
 
     public static function install(): void
@@ -137,7 +146,7 @@ final class Schema
             'tasks'=>function ($t) {
                 $t->unsignedInteger('server_id')->index(); $t->unsignedInteger('service_id')->index(); $t->string('action',32);
                 $t->string('request_key',64)->unique(); $t->string('actor',80); $t->string('status',16)->default('queued')->index();
-                $t->string('stage',120)->default('等待执行'); $t->unsignedInteger('stage_number')->default(0); $t->unsignedInteger('stage_total')->default(1);
+                $t->string('stage',120)->default(Lang::text('ui.queued',[],'chinese')); $t->unsignedInteger('stage_number')->default(0); $t->unsignedInteger('stage_total')->default(1);
                 $t->longText('payload'); $t->longText('context'); $t->longText('logs'); $t->longText('error')->nullable();
                 $t->unsignedInteger('attempts')->default(0); $t->dateTime('started_at')->nullable(); $t->dateTime('finished_at')->nullable();
             },
@@ -234,5 +243,5 @@ final class Schema
         Traffic::migrateCycles();
     }
 
-    public static function deactivate(): array { return ['status'=>'success','description'=>'已停用']; }
+    public static function deactivate(): array { return ['status'=>'success','description'=>Lang::text('message.disabled')]; }
 }

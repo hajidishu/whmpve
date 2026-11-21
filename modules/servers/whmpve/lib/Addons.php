@@ -31,7 +31,7 @@ final class Addons
                 if (!$plan) { return; }
                 $prices=Util::unpack($plan->traffic_reset_prices);
                 if ($prices) {
-                    DB::table('mod_whmpve_addons')->insert(['server_id'=>$plan->server_id,'plan_id'=>$id,'name'=>'流量重置包',
+                    DB::table('mod_whmpve_addons')->insert(['server_id'=>$plan->server_id,'plan_id'=>$id,'name'=>Lang::text('ui.traffic_reset_pack'),
                         'kind'=>'traffic_reset','quantity'=>100,'prices'=>Util::json($prices),'created_at'=>Util::now(),'updated_at'=>Util::now()]);
                 }
                 DB::table('mod_whmpve_plans')->where('id',$id)->update(['traffic_reset_prices'=>null]);
@@ -51,11 +51,11 @@ final class Addons
     {
         $plan=(int)($input['plan_id'] ?? 0); $id=(int)($input['id'] ?? 0);
         $kind=$input['kind'] ?? '';
-        if (!is_string($kind) || !isset(self::LIMITS[$kind])) { throw new Fault('请选择附加服务类型'); }
+        if (!is_string($kind) || !isset(self::LIMITS[$kind])) { throw Fault::localized('message.select_an_add_on_type'); }
         $name=Util::label((string)($input['name'] ?? ''));
-        $quantity=Util::integer($input['quantity'] ?? ($kind==='traffic_reset' ? 100 : null),1,self::LIMITS[$kind],'加购数量或重置百分比');
+        $quantity=Util::integer($input['quantity'] ?? ($kind==='traffic_reset' ? 100 : null),1,self::LIMITS[$kind],Lang::text('message.add_on_quantity_or_reset_percentage'));
         $stock=$input['stock'] ?? '';
-        $stock=$stock==='' ? null : Util::integer($stock,0,100000000,'库存');
+        $stock=$stock==='' ? null : Util::integer($stock,0,100000000,Lang::text('ui.stock'));
         $prices=Purchases::prices($input['prices'] ?? [],$kind);
         return DB::connection()->transaction(function() use($input,$server,$plan,$id,$kind,$name,$quantity,$stock,$prices) {
             Ipam::lockServer($server);
@@ -63,14 +63,14 @@ final class Addons
             $pool=null;
             if ($family=self::family($kind)) {
                 $pool=Util::scoped('ip_pools',(int)($input['pool_id'] ?? 0),$server);
-                if ((int)$pool['family']!==$family) { throw new Fault('IP 池与附加服务类型不一致'); }
+                if ((int)$pool['family']!==$family) { throw Fault::localized('message.the_ip_pool_does_not_match_the'); }
             }
             $values=['server_id'=>$server,'plan_id'=>$plan,'name'=>$name,'kind'=>$kind,'quantity'=>$quantity,
                 'pool_id'=>$pool['id'] ?? null,'stock'=>$stock,'prices'=>Util::json($prices),
                 'active'=>!empty($input['active']),'updated_at'=>Util::now()];
             if (!$id) { return DB::table('mod_whmpve_addons')->insertGetId($values+['created_at'=>Util::now()]); }
             $row=DB::table('mod_whmpve_addons')->where('id',$id)->where('server_id',$server)->where('plan_id',$plan);
-            if (!$row->lockForUpdate()->first(['id'])) { throw new Fault('附加服务不存在',404); }
+            if (!$row->lockForUpdate()->first(['id'])) { throw Fault::localized('message.add_on_not_found',404); }
             $row->update($values);
             return $id;
         });
@@ -85,7 +85,7 @@ final class Addons
     {
         Util::scoped('plans',$plan,$server);
         if (!DB::table('mod_whmpve_addons')->where('server_id',$server)->where('plan_id',$plan)->where('id',$id)->delete()) {
-            throw new Fault('附加服务不存在',404);
+            throw Fault::localized('message.add_on_not_found',404);
         }
         return true;
     }
@@ -102,25 +102,25 @@ final class Addons
 
     public static function reason(array $instance,object $service,array $spec,array $effect,?array $usage): ?string
     {
-        if (empty($instance['vmid'])) { return '服务尚未开通'; }
+        if (empty($instance['vmid'])) { return Lang::text('message.the_service_has_not_been_provisioned_yet'); }
         $kind=$effect['kind'];
         if ($kind==='traffic_reset') {
             if (!in_array($instance['lifecycle'],['active','suspended'],true) || !in_array($service->domainstatus,['Active','Suspended'],true)) {
-                return '当前服务状态不可购买';
+                return Lang::text('message.purchases_are_unavailable_for_this_service_status');
             }
-            if (($spec['traffic_gb'] ?? 0)<=0) { return '此 VPS 不限流量'; }
-            if ($usage!==null && $usage['incoming']+$usage['outgoing']<=0) { return '本期暂无已用流量'; }
+            if (($spec['traffic_gb'] ?? 0)<=0) { return Lang::text('message.this_vps_has_unlimited_traffic'); }
+            if ($usage!==null && $usage['incoming']+$usage['outgoing']<=0) { return Lang::text('message.no_traffic_has_been_used_this_period'); }
             return null;
         }
-        if ($instance['lifecycle']!=='active' || $service->domainstatus!=='Active') { return '服务需为正常状态'; }
+        if ($instance['lifecycle']!=='active' || $service->domainstatus!=='Active') { return Lang::text('message.the_service_must_be_active'); }
         $cycle=$effect['cycle'];
         if (!isset(self::TERMS[$cycle]) || ($effect['service_cycle'] ?? $cycle)!==$service->billingcycle) {
-            return '当前计费周期不支持此项加购';
+            return Lang::text('message.this_add_on_is_unavailable_for_the');
         }
         if ($service->billingcycle!=='Free Account' && ($cycle!==$service->billingcycle || !strtotime((string)$service->nextduedate)
-            || $service->nextduedate==='0000-00-00')) { return '当前计费周期不支持此项加购'; }
+            || $service->nextduedate==='0000-00-00')) { return Lang::text('message.this_add_on_is_unavailable_for_the'); }
         $current=$spec[$kind] ?? $spec[$kind.'_count'] ?? 0;
-        return $current+$effect['quantity']>self::LIMITS[$kind] ? '已达此服务的规格上限' : null;
+        return $current+$effect['quantity']>self::LIMITS[$kind] ? Lang::text('message.this_service_has_reached_its_resource_limit') : null;
     }
 
     public static function firstDue(string $cycle,int $paid): string

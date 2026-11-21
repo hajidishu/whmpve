@@ -71,14 +71,14 @@ final class Jobs
             ->where('h.id',$instance['service_id'])->where('p.servertype','whmpve');
         $native=($lock ? $query->lockForUpdate() : $query)->first(['h.domainstatus','h.server']);
         if (!$native || !in_array($native->domainstatus,['Pending','Active'],true)) {
-            throw new Fault('WHMCS 服务状态已变更，停止开通',409);
+            throw Fault::localized('message.provisioning_was_stopped_because_the_whmcs_service',409);
         }
         Catalog::assertServerBinding($instance,(int)$native->server);
     }
     public static function instance(int $service): array
     {
         $r=DB::table('mod_whmpve_instances')->where('service_id',$service)->first();
-        if (!$r) { throw new Fault('服务尚未建立实例记录',404); }
+        if (!$r) { throw Fault::localized('message.this_service_does_not_have_an_instance',404); }
         return (array)$r;
     }
     public static function unfinishedNetworkEdit(int $service): bool
@@ -95,7 +95,7 @@ final class Jobs
     private static function checkNetworkEdit(int $service,string $action): void
     {
         if (in_array($action,['start','reboot','reset','reinstall','unsuspend','change_package','backup_restore','lxc_password_reset'],true) && self::unfinishedNetworkEdit($service)) {
-            throw new Fault('请先完成或重新保存实例的网络配置',409);
+            throw Fault::localized('message.complete_or_save_the_instances_network_configuration',409);
         }
     }
     private static function checkPasswordReset(int $service,int $retry=0): void
@@ -104,7 +104,7 @@ final class Jobs
             ->where('status','failed')->where('id','!=',$retry)->pluck('context');
         foreach ($tasks as $context) {
             if (!empty(Util::unpack($context)['password_reset_pending'])) {
-                throw new Fault('上一次重置密码尚有待处理资源，请先重试原任务',409);
+                throw Fault::localized('message.the_previous_password_reset_has_pending_resources',409);
             }
         }
     }
@@ -116,19 +116,19 @@ final class Jobs
             $ctx=Util::unpack($context);
             if (!empty($ctx['new_vmid']) && (int)$ctx['new_vmid']!==$vmid
                 && (!empty($ctx['reinstall_cutover']) || !empty($ctx['done']['old-shutdown']) || !empty($ctx['ops']['old-shutdown']))) {
-                throw new Fault('重装尚有待核对的数据盘，请先重试原任务',409);
+                throw Fault::localized('message.the_previous_reinstall_has_data_disks_to',409);
             }
         }
     }
     public static function enqueue(int $service,string $action,string $key,array $payload=[],string $actor='system'): array
     {
-        if (!Util::enabled()) { throw new Fault('管理插件尚未激活或已停用',503); }
-        if (!in_array($action,self::ACTIONS,true)) { throw new Fault('不支持的操作'); }
-        if (!preg_match('/^[a-zA-Z0-9_-]{8,120}$/',$key)) { throw new Fault('请求编号无效'); }
+        if (!Util::enabled()) { throw Fault::localized('message.activate_the_whmpve_add_on_module_first',503); }
+        if (!in_array($action,self::ACTIONS,true)) { throw Fault::localized('message.unsupported_action'); }
+        if (!preg_match('/^[a-zA-Z0-9_-]{8,120}$/',$key)) { throw Fault::localized('message.invalid_request_id'); }
         $request=hash('sha256',$service.':'.$action.':'.$key);
         return DB::connection()->transaction(function () use ($service,$action,$request,$payload,$actor) {
             $instance=DB::table('mod_whmpve_instances')->where('service_id',$service)->lockForUpdate()->first();
-            if (!$instance) { throw new Fault('实例记录不存在',404); }
+            if (!$instance) { throw Fault::localized('message.instance_record_not_found',404); }
             $old=DB::table('mod_whmpve_tasks')->where('request_key',$request)->first();
             if ($old) {
                 $saved=Util::unpack($old->payload);
@@ -137,35 +137,35 @@ final class Jobs
                     && hash_equals(decrypt($saved['encrypted_password']),decrypt($submitted['encrypted_password']))) {
                     unset($saved['encrypted_password'],$submitted['encrypted_password']);
                 }
-                if ($saved!==$submitted) { throw new Fault('相同请求编号不能用于不同参数',409); }
+                if ($saved!==$submitted) { throw Fault::localized('message.a_request_id_cannot_be_reused_with',409); }
                 return self::public((array)$old);
             }
-            if (DB::table('mod_whmpve_tasks')->where('service_id',$service)->whereIn('status',['queued','running'])->exists()) { throw new Fault('该实例已有执行中的任务，请等待完成',409); }
-            if ($instance->lifecycle==='terminated' && $action!=='backup_delete') { throw new Fault('服务实例已销毁',409); }
+            if (DB::table('mod_whmpve_tasks')->where('service_id',$service)->whereIn('status',['queued','running'])->exists()) { throw Fault::localized('message.an_instance_task_is_already_running_wait',409); }
+            if ($instance->lifecycle==='terminated' && $action!=='backup_delete') { throw Fault::localized('message.the_service_instance_has_been_deleted',409); }
             self::checkNetworkEdit($service,$action);
             self::checkPasswordReset($service);
             self::checkReinstallRecovery($service,(int)$instance->vmid);
-            if ($action==='create' && $instance->vmid && $instance->lifecycle==='active') { throw new Fault('服务已经开通',409); }
+            if ($action==='create' && $instance->vmid && $instance->lifecycle==='active') { throw Fault::localized('message.the_service_is_already_provisioned',409); }
             if ($action==='create') { self::requireProvisioning((array)$instance,true); }
             if (!in_array($action,['create','terminate','unsuspend','suspend','traffic','traffic_reset','backup_delete'],true)) {
                 $native=DB::table('tblhosting')->where('id',$service)->first(['domainstatus','suspendreason']);
                 $allowed=$native && ($action==='edit_config'
                     ? InstanceConfig::editable($instance->lifecycle,$native->domainstatus,$native->suspendreason)
                     : $instance->lifecycle==='active' && $native->domainstatus==='Active');
-                if (!$allowed) { throw new Fault('当前服务状态不允许此操作',403); }
+                if (!$allowed) { throw Fault::localized('message.this_action_is_unavailable_for_the_current',403); }
             }
             $spec=Util::unpack($instance->applied ?: $instance->desired);
             if (in_array($action,['start','reboot','reset','reinstall','unsuspend','backup_restore','lxc_password_reset'],true)
-                && Traffic::target($spec,Traffic::row($service))==='suspended') { throw new Fault('本期流量已用尽，当前不能启动或重装',403); }
+                && Traffic::target($spec,Traffic::row($service))==='suspended') { throw Fault::localized('message.the_traffic_quota_for_this_period_is',403); }
             if ($action==='reinstall') {
                 $image=Util::scoped('images',(int)($payload['image_id'] ?? 0),(int)$instance->server_id);
-                if (!Catalog::imageAllowed($image,$spec)) { throw new Fault('此套餐不能使用该镜像'); }
+                if (!Catalog::imageAllowed($image,$spec)) { throw Fault::localized('message.this_plan_does_not_allow_the_selected'); }
                 if (str_starts_with($actor,'client:') && ($spec['reinstall_limit'] ?? 0)>0
-                    && Catalog::reinstallCount($service)>=$spec['reinstall_limit']) { throw new Fault('本月客户区重装次数已用尽',429); }
-                if (($payload['confirm_hostname'] ?? '')!==$instance->hostname) { throw new Fault('请输入完整主机名以确认清空系统盘'); }
+                    && Catalog::reinstallCount($service)>=$spec['reinstall_limit']) { throw Fault::localized('message.the_monthly_client_area_reinstall_limit_has',429); }
+                if (($payload['confirm_hostname'] ?? '')!==$instance->hostname) { throw Fault::localized('message.enter_the_full_hostname_to_confirm_erasing'); }
             }
-            if ($action==='password' && $instance->kind!=='qemu') { throw new Fault('此实例不支持面板改密'); }
-            if ($action==='lxc_password_reset' && $instance->kind!=='lxc') { throw new Fault('此实例不是 LXC 容器'); }
+            if ($action==='password' && $instance->kind!=='qemu') { throw Fault::localized('message.this_instance_does_not_support_password_resets'); }
+            if ($action==='lxc_password_reset' && $instance->kind!=='lxc') { throw Fault::localized('message.this_instance_is_not_an_lxc_container'); }
             if ($action==='backup' && empty($payload['automatic'])) { Backups::checkCreate((array)$instance,false); }
             if (in_array($action,['backup_restore','backup_delete'],true)) {
                 Backups::record((array)$instance,(int)($payload['backup_id'] ?? 0));
@@ -175,19 +175,29 @@ final class Jobs
                     ->where('status','failed')->get(['context']) as $failed) {
                     $ctx=Util::unpack($failed->context);
                     if (!empty($ctx['new_vmid']) && empty($ctx['done']['remove-old'])) {
-                        throw new Fault('上一次系统更换尚有待处理资源，请先重试原任务',409);
+                        throw Fault::localized('message.the_previous_os_replacement_has_pending_resources',409);
                     }
                 }
             }
             $id=DB::table('mod_whmpve_tasks')->insertGetId(['server_id'=>$instance->server_id,'service_id'=>$service,'action'=>$action,'request_key'=>$request,'actor'=>$actor,
-                'status'=>'queued','stage'=>'等待执行','payload'=>Util::json($payload),'context'=>'{}','logs'=>'[]',
+                'status'=>'queued','stage'=>Lang::text('ui.queued'),'payload'=>Util::json($payload),'context'=>'{}','logs'=>'[]',
                 'created_at'=>Util::now(),'updated_at'=>Util::now()]);
             return self::public(Util::row('tasks',$id));
         });
     }
     public static function public(array $task): array
     {
-        return array_intersect_key($task,array_flip(['id','server_id','service_id','action','status','stage','stage_number','stage_total','error','created_at','updated_at','finished_at']));
+        $visible=array_intersect_key($task,array_flip(['id','server_id','service_id','action','status','stage','stage_number','stage_total','error','created_at','updated_at','finished_at']));
+        if ($task['status']==='success') { $visible['stage']=Lang::text('message.completed'); }
+        elseif (!$task['stage_number']) { $visible['stage']=Lang::text('ui.queued'); }
+        $field=$task['status']==='failed' && !empty($task['error']) ? 'error' : 'stage';
+        foreach (array_reverse(Util::unpack($task['logs'] ?? '')) as $entry) {
+            if (($entry['field'] ?? 'stage')===$field && ($visible[$field] ?? null)===$entry['message']) {
+                $visible[$field]=Lang::display($entry['message'],$entry['translation'] ?? null);
+                break;
+            }
+        }
+        return $visible;
     }
     public static function retry(int $id,string $actor): array
     {
@@ -195,16 +205,16 @@ final class Jobs
             $task=Util::row('tasks',$id);
             $instance=DB::table('mod_whmpve_instances')->where('service_id',$task['service_id'])->lockForUpdate()->first();
             $task=(array)(DB::table('mod_whmpve_tasks')->where('id',$id)->lockForUpdate()->first()
-                ?? throw new Fault('任务不存在',404));
-            if (!$instance || ($instance->lifecycle==='terminated' && $task['action']!=='backup_delete')) { throw new Fault('实例已销毁'); }
-            if ($task['status']!=='failed') { throw new Fault('只能重试失败任务'); }
-            if (DB::table('mod_whmpve_tasks')->where('service_id',$task['service_id'])->whereIn('status',['queued','running'])->exists()) { throw new Fault('已有执行中的任务',409); }
+                ?? throw Fault::localized('message.task_not_found',404));
+            if (!$instance || ($instance->lifecycle==='terminated' && $task['action']!=='backup_delete')) { throw Fault::localized('message.the_instance_has_been_deleted'); }
+            if ($task['status']!=='failed') { throw Fault::localized('message.only_failed_tasks_can_be_retried'); }
+            if (DB::table('mod_whmpve_tasks')->where('service_id',$task['service_id'])->whereIn('status',['queued','running'])->exists()) { throw Fault::localized('message.a_task_is_already_in_progress',409); }
             self::checkNetworkEdit((int)$task['service_id'],$task['action']);
             self::checkPasswordReset((int)$task['service_id'],$id);
             self::checkReinstallRecovery((int)$task['service_id'],(int)$instance->vmid,$id);
             if (in_array($task['action'],['edit_config','addon_apply'],true) && DB::table('mod_whmpve_tasks')->where('service_id',$task['service_id'])
                 ->whereIn('action',['edit_config','addon_apply'])->where('id','>',$id)->where('stage_number','>=',2)->exists()) {
-                throw new Fault('已有较新的配置任务，请查看最新任务',409);
+                throw Fault::localized('message.a_newer_configuration_task_exists_check_the',409);
             }
             $context=Util::unpack($task['context']);
             if ($task['action']==='reinstall' && isset($context['reinstall_rolled_back'])) { $context=[]; }
@@ -216,7 +226,7 @@ final class Jobs
             $values=['status'=>'queued','error'=>null,'finished_at'=>null,'context'=>Util::json($context),'updated_at'=>Util::now()];
             if (str_starts_with($actor,'admin:')) {
                 $logs=Util::unpack($task['logs']);
-                $logs[]=['time'=>Util::now(),'message'=>'管理员 #'.(int)substr($actor,6).' 重试了此任务'];
+                $logs[]=['time'=>Util::now(),'message'=>Lang::text('ui.administrator').(int)substr($actor,6).Lang::text('message.retried_this_task')];
                 $values['logs']=Util::json($logs);
             }
             DB::table('mod_whmpve_tasks')->where('id',$id)->update($values);
@@ -259,7 +269,7 @@ final class Jobs
             $state['cursor']=(int)$instance->id;
             try {
                 if (DB::table('mod_whmpve_tasks')->where('service_id',$service)->whereIn('status',['queued','running'])->exists()) {
-                    throw new Pending('等待实例任务完成');
+                    throw new Pending(Lang::text('message.waiting_for_the_instance_task_to_finish'));
                 }
                 self::checkPasswordReset($service);
                 self::checkReinstallRecovery($service,(int)$instance->vmid);
@@ -268,14 +278,14 @@ final class Jobs
                 if ($native) {
                     Catalog::assertServerBinding((array)$instance,(int)$native->server);
                     $pve=new Pve($server,$deadline,true);
-                    $owned=$pve->owned((array)$instance) ?? throw new IdentityMismatch('实例在 PVE 上不存在',404);
+                    $owned=$pve->owned((array)$instance) ?? throw IdentityMismatch::localized('message.the_instance_was_not_found_on_pve',404);
                     $spec=Util::unpack($instance->applied ?: $instance->desired);
                     $enabled=!empty($pve->settings['onboot']) && $instance->lifecycle==='active' && $native->domainstatus==='Active'
                         && !self::unfinishedNetworkEdit($service) && Traffic::target($spec,Traffic::row($service))!=='suspended';
                     if ($enabled && DB::table('mod_whmpve_tasks')->where('service_id',$service)->where('action','backup_restore')
                         ->where('status','failed')->whereRaw("JSON_CONTAINS_PATH(context, 'one', '$.ops.\"restore-start\"', '$.done.\"restore-start\"')")
                         ->whereRaw("CAST(JSON_UNQUOTE(JSON_EXTRACT(context, '$.old_vmid')) AS UNSIGNED) = ?",[$instance->vmid])->exists()) {
-                        throw new Fault('备份恢复尚有待核对的实例，请先重试原任务');
+                        throw Fault::localized('message.the_previous_backup_restore_has_instances_to');
                     }
                     $pve->setOnboot($owned,$enabled);
                 }
@@ -283,7 +293,7 @@ final class Jobs
                 $state['retry']=true;
             } catch (\Throwable $e) {
                 $state['retry']=$state['retry'] || $e instanceof UnknownPveRequest;
-                Util::log('同步开机自启动失败：'.$e->getMessage(),$server,$service,'warning');
+                Util::log(Lang::text('message.could_not_sync_the_automatic_startup_setting').$e->getMessage(),$server,$service,'warning');
             }
             $job->update(['value'=>Util::json($state),'updated_at'=>Util::now()]);
             return true;
@@ -311,18 +321,23 @@ final class Jobs
                 DB::table('mod_whmpve_instances')->where('service_id',$task->service_id)->update(['last_error'=>null,'updated_at'=>Util::now()]);
                 $binding=self::instance((int)$task->service_id);
                 DB::table('mod_whmpve_cache')->where('cache_key','like','metrics:'.$binding['server_id'].':'.$binding['uuid'].':%')->delete();
-                DB::table('mod_whmpve_tasks')->where('id',$task->id)->update(['status'=>'success','error'=>null,'stage'=>'已完成',
+                DB::table('mod_whmpve_tasks')->where('id',$task->id)->update(['status'=>'success','error'=>null,'stage'=>Lang::text('message.completed'),
                     'stage_number'=>DB::raw('stage_total'),'finished_at'=>Util::now(),'updated_at'=>Util::now(),'attempts'=>DB::raw('attempts+1')]);
             } catch (Pending $e) {
                 DB::table('mod_whmpve_tasks')->where('id',$task->id)->update(['status'=>'queued','updated_at'=>Util::now()]);
             } catch (\Throwable $e) {
                 $message=mb_substr($e->getMessage(),0,1000);
-                DB::table('mod_whmpve_tasks')->where('id',$task->id)->update(['status'=>'failed','error'=>$message,
-                    'finished_at'=>Util::now(),'updated_at'=>Util::now(),'attempts'=>DB::raw('attempts+1')]);
+                $failed=['status'=>'failed','error'=>$message,'finished_at'=>Util::now(),'updated_at'=>Util::now(),'attempts'=>DB::raw('attempts+1')];
+                if ($e instanceof Fault && $e->translation) {
+                    $logs=Util::unpack(DB::table('mod_whmpve_tasks')->where('id',$task->id)->value('logs'));
+                    $logs[]=['time'=>Util::now(),'message'=>$message,'field'=>'error','translation'=>$e->translation];
+                    $failed['logs']=Util::json(array_slice($logs,-100));
+                }
+                DB::table('mod_whmpve_tasks')->where('id',$task->id)->update($failed);
                 DB::table('mod_whmpve_instances')->where('service_id',$task->service_id)->update(['last_error'=>$message,'updated_at'=>Util::now()]);
                 if (in_array($task->action,['traffic_reset','addon_apply'],true) && $task->attempts+1===Purchases::ATTEMPTS) {
                     $invoice=(int)Util::unpack($task->payload)['invoice_id'];
-                    Util::log('流量重置账单 #'.$invoice.' 执行失败，请检查任务 #'.$task->id.' 后重试或核对退款。',
+                    Util::log(Lang::text('message.traffic_reset_invoice').$invoice.Lang::text('message.failed_check_task').$task->id.Lang::text('message.before_retrying_or_verifying_the_refund'),
                         (int)$task->server_id,(int)$task->service_id,'warning');
                 }
             }
@@ -336,7 +351,7 @@ final class Jobs
             if ($action==='create') {
                 self::requireProvisioning($instance);
                 if ($instance['lifecycle']==='active' && $instance['vmid']) {
-                    (new Pve((int)$instance['server_id']))->owned($instance) ?: throw new Fault('已开通实例在 PVE 上不存在');
+                    (new Pve((int)$instance['server_id']))->owned($instance) ?: throw Fault::localized('message.the_provisioned_instance_is_missing_from_pve');
                     return Delivery::nativeSuccess((int)$params['serviceid']);
                 }
             }
@@ -344,11 +359,11 @@ final class Jobs
             $key=$action==='create' ? 'create-'.$instance['uuid'] : $action.'-'.bin2hex(random_bytes(8));
             if ($action==='change_package') {
                 $resolved=Catalog::resolve($params);
-                if ((int)$resolved['server']['id']!==(int)$instance['server_id']) { throw new Fault('升级不能更换服务器'); }
+                if ((int)$resolved['server']['id']!==(int)$instance['server_id']) { throw Fault::localized('message.the_server_cannot_be_changed_during_an'); }
                 $payload['spec']=$resolved['spec']; $payload['plan_id']=$resolved['plan']['id'];
             }
             $task=self::enqueue((int)$params['serviceid'],$action,$key,$payload,'module');
-            if ($task['status']==='failed') { return '已有失败任务，请在任务中心检查并重试：#'.$task['id']; }
+            if ($task['status']==='failed') { return Lang::text('message.a_task_failed_review_it_in_tasks').$task['id']; }
             $deadline=microtime(true)+65;
             do {
                 self::run((int)$task['id']); $task=Util::row('tasks',(int)$task['id']);
@@ -358,7 +373,7 @@ final class Jobs
                 if ($task['status']==='failed') { return $task['error']; }
                 usleep(250000);
             } while (microtime(true)<$deadline);
-            return '任务 #'.$task['id'].' 仍在执行，后台会继续处理；请勿重复开通。';
+            return Lang::text('message.request_pending',['task'=>$task['id']]);
         } catch (\Throwable $e) { return $e->getMessage(); }
     }
 }
@@ -378,12 +393,14 @@ final class Job
     {
         DB::table('mod_whmpve_tasks')->where('id',$this->task['id'])->update(['context'=>Util::json($this->ctx),'updated_at'=>Util::now()]);
     }
-    private function stage(string $label,int $number,int $total): void
+    private function stage(string $key,int $number,int $total,array $values=[]): void
     {
+        $label=Lang::text($key,$values,'chinese');
+        $translation=['key'=>$key,'values'=>$values];
         DB::table('mod_whmpve_tasks')->where('id',$this->task['id'])->update(['stage'=>$label,'stage_number'=>$number,'stage_total'=>$total,'updated_at'=>Util::now()]);
         $logs=Util::unpack(DB::table('mod_whmpve_tasks')->where('id',$this->task['id'])->value('logs'));
         if (!$logs || end($logs)['message']!==$label) {
-            $logs[]=['time'=>Util::now(),'message'=>$label];
+            $logs[]=['time'=>Util::now(),'message'=>$label,'translation'=>$translation];
             DB::table('mod_whmpve_tasks')->where('id',$this->task['id'])->update(['logs'=>Util::json(array_slice($logs,-100))]);
         }
     }
@@ -399,7 +416,7 @@ final class Job
         if (!empty($this->ctx['ops'][$key]['uncertain'])) {
             if ($worker) { $this->recoverWorker($key,$worker); }
             elseif ($passwordReset) { $this->resumePasswordResetOp($key,$method,$path,$data); }
-            else { throw new Fault('上次请求结果未知。请核对 PVE 任务和实例，勿盲目重试。'); }
+            else { throw Fault::localized('message.the_last_request_has_an_unknown_outcome'); }
             if (!empty($this->ctx['done'][$key])) { return; }
         }
         if (empty($this->ctx['ops'][$key]['upid'])) {
@@ -417,7 +434,7 @@ final class Job
             }
             catch (Fault $e) {
                 if (($worker || $passwordReset || in_array($key,['quota-resume','quota-resume-cancelled'],true)) && $e instanceof UnknownPveRequest) {
-                    throw new Pending('正在核对 PVE 任务');
+                    throw new Pending(Lang::text('message.checking_the_pve_task'));
                 }
                 if (str_contains($e->getMessage(),'PVE HTTP')) { unset($this->ctx['ops'][$key]); $this->save(); }
                 throw $e;
@@ -431,29 +448,29 @@ final class Job
             try {
                 $status=$this->pve->request('GET','/nodes/'.rawurlencode($operation['node']).'/tasks/'.rawurlencode($operation['upid']).'/status');
             } catch (Fault $e) {
-                if ($worker) { throw new UnknownPveRequest('待核对：无法读取已提交的 PVE 任务状态',409); }
+                if ($worker) { throw UnknownPveRequest::localized('message.review_required_could_not_read_the_submitted',409); }
                 throw $e;
             }
             if (($status['status'] ?? '')==='stopped') {
-                $exit=(string)($status['exitstatus'] ?? '未知错误');
+                $exit=(string)($status['exitstatus'] ?? Lang::text('message.unknown_error'));
                 $warning=$this->task['action']==='create' && preg_match('/^WARNINGS: [1-9][0-9]*$/D',$exit);
                 if ($exit!=='OK' && !$warning) {
                     if (!empty($operation['recovered']) && ($worker[0] ?? '')==='qmclone') {
-                        throw new UnknownPveRequest('待核对：克隆任务以模板编号记录，请确认实际目标 VMID',409);
+                        throw UnknownPveRequest::localized('message.review_required_the_clone_task_is_recorded',409);
                     }
                     if ($this->task['action']==='lxc_password_reset' && $key==='restore-archive') {
                         $this->ctx['password_reset_restore_submitted']=true;
                     }
                     unset($this->ctx['ops'][$key]); $this->save();
                     if ($key==='initial-create' && Pve::vmidAlreadyUsed($exit,(int)$this->instance['vmid'])) {
-                        throw new VmidConflict('PVE 拒绝创建：'.$exit,409);
+                        throw new VmidConflict(Lang::text('message.pve_rejected_creation').$exit,409);
                     }
-                    throw new Fault('PVE 任务失败：'.$exit);
+                    throw new Fault(Lang::text('message.pve_task_failed').$exit);
                 }
                 $this->ctx['done'][$key]=true;
                 if ($warning) {
                     DB::connection()->transaction(function() use($exit,$operation) {
-                        Util::log('PVE 开通告警 '.$exit.' · '.$operation['upid'],
+                        Util::log(Lang::text('message.pve_provisioning_warning').$exit.' · '.$operation['upid'],
                             (int)$this->instance['server_id'],(int)$this->instance['service_id'],'warning');
                         $this->save();
                     });
@@ -465,7 +482,7 @@ final class Job
             if ($this->deadline!==null && (!$this->foreground || microtime(true)+0.25>=$this->deadline)) { break; }
             usleep($this->foreground ? 250000 : 700000);
         } while (microtime(true)<$deadline);
-        throw new Pending('PVE 任务执行中');
+        throw new Pending(Lang::text('message.pve_task_in_progress'));
     }
 
     private function recoverWorker(string $key,array $worker): void
@@ -473,10 +490,10 @@ final class Job
         [$type,$id,$node]=$worker;
         $since=(int)$this->ctx['ops'][$key]['since'];
         try { $upid=$this->pve->findWorker($type,(string)$id,$since,$node); }
-        catch (Fault $e) { throw new UnknownPveRequest('待核对：无法安全确认 PVE 任务，'.$e->getMessage(),409); }
+        catch (Fault $e) { throw new UnknownPveRequest(Lang::text('message.review_required_could_not_safely_verify_the').$e->getMessage(),409); }
         if (!$upid) {
-            if (time()<$since+60) { throw new Pending('正在核对 PVE 任务'); }
-            throw new UnknownPveRequest('待核对：PVE 请求已提交，未能确认任务结果',409);
+            if (time()<$since+60) { throw new Pending(Lang::text('message.checking_the_pve_task')); }
+            throw UnknownPveRequest::localized('message.review_required_the_pve_request_was_submitted',409);
         }
         $this->ctx['ops'][$key]=['upid'=>$upid,'node'=>$node,'recovered'=>true];
         $this->save();
@@ -488,7 +505,7 @@ final class Job
         if ($method==='PUT') {
             if (!empty($this->ctx['ops'][$key]['retried'])) {
                 unset($this->ctx['ops'][$key]); $this->save();
-                throw new Fault('PVE 配置请求连续两次未返回结果');
+                throw Fault::localized('message.two_consecutive_pve_configuration_requests_returned_no');
             }
             $this->ctx['ops'][$key]=['retried'=>true,'since'=>$since]; $this->save();
             return;
@@ -502,35 +519,35 @@ final class Job
         } elseif (preg_match('#/lxc/(\d+)(?:/status/(start|stop|shutdown))?$#D',$path,$match)) {
             [$type,$id]=['vz'.($match[2] ?? 'destroy'),$match[1]];
         } else {
-            throw new Fault('无法核对上次 PVE 请求，请从日志/任务检查',409);
+            throw Fault::localized('message.could_not_verify_the_last_pve_request',409);
         }
         $upid=$this->pve->findWorker($type,$id,$since);
         if ($upid) {
             $this->ctx['ops'][$key]=['upid'=>$upid,'node'=>$this->pve->settings['node']]; $this->save();
             return;
         }
-        if (time()<$since+60) { throw new Pending('等待 PVE 记录任务'); }
+        if (time()<$since+60) { throw new Pending(Lang::text('message.waiting_for_pve_to_record_the_task')); }
         if ($key==='backup' && $this->findTaskBackup()) {
             $this->ctx['done'][$key]=true; $this->save();
             return;
         }
         if ($key==='restore-archive') {
             $copy=$this->passwordResetCopy();
-            if ($copy && !empty($copy['config']['lock'])) { throw new Fault('恢复副本仍有 PVE 锁，请稍后重试',409); }
+            if ($copy && !empty($copy['config']['lock'])) { throw Fault::localized('message.pve_is_still_locking_the_restored_copy',409); }
             if ($copy) { $this->ctx['password_reset_restore_submitted']=true; }
         }
         unset($this->ctx['ops'][$key]); $this->save();
-        throw new Fault('未找到上次 PVE 请求的任务记录');
+        throw Fault::localized('message.no_task_was_found_for_the_last');
     }
     private function power(string $command,?int $vmid=null,string $key='power'): void
     {
         $reinstall=$this->task['action']==='reinstall';
         if (!empty($this->ctx['power_confirmed'][$key]) && !$reinstall && $this->task['action']!=='lxc_password_reset') { return; }
         if ($command==='start' && Jobs::unfinishedNetworkEdit((int)$this->instance['service_id'])) {
-            throw new Fault('请先完成实例的网络配置');
+            throw Fault::localized('message.complete_the_instances_network_configuration_first');
         }
         $owned=$this->pve->owned($this->instance,$vmid);
-        if (!$owned) { throw new Fault('PVE 实例不存在'); }
+        if (!$owned) { throw Fault::localized('message.pve_instance_not_found'); }
         $status=$this->pve->request('GET',$owned['path'].'/status/current');
         if (($vmid===null || $vmid===(int)$this->instance['vmid']) && in_array($this->instance['lifecycle'],['active','suspended'],true)) {
             Traffic::sample($this->instance,$this->pve,$status);
@@ -541,7 +558,7 @@ final class Job
             $this->rememberPower($key,$vmid,$status['status']); return;
         }
         if (in_array($command,['reboot','reset'],true) && $status['status']!=='running'
-            && empty($this->ctx['ops'][$key])) { throw new Fault('运行中的实例才能重启'); }
+            && empty($this->ctx['ops'][$key])) { throw Fault::localized('message.only_running_instances_can_be_restarted'); }
         $worker=$reinstall || in_array($this->task['action'],Jobs::POWER_ACTIONS,true)
             ? [($this->instance['kind']==='lxc' ? 'vz' : 'qm').$command,$owned['vmid'],$owned['node']] : null;
         $this->op($key,'POST',$owned['path'].'/status/'.$command,$command==='shutdown' ? ['timeout'=>30] : [],$worker);
@@ -553,8 +570,8 @@ final class Job
                 unset($this->ctx['done'][$key],$this->ctx['ops'][$key]);
             }
             $this->save();
-            if ($expired) { throw new Fault('PVE 电源任务已结束，实例未达到目标状态'); }
-            throw new Pending('等待电源状态同步');
+            if ($expired) { throw Fault::localized('message.the_pve_power_task_ended_but_the'); }
+            throw new Pending(Lang::text('message.waiting_for_the_power_state_to_sync'));
         }
         $this->rememberPower($key,$vmid,$expected);
     }
@@ -570,7 +587,7 @@ final class Job
     }
     private function create(int $vmid,string $node,array $spec,array $image,string $prefix,?string $password=null): void
     {
-        if ($image['kind']!==$spec['kind'] || $this->instance['kind']!==$spec['kind']) { throw new Fault('实例类型与镜像不一致'); }
+        if ($image['kind']!==$spec['kind'] || $this->instance['kind']!==$spec['kind']) { throw Fault::localized('message.the_instance_type_does_not_match_the'); }
         $key=$prefix.'create';
         if (empty($this->ctx['done'][$key]) && empty($this->ctx['ops'][$key])) {
             $initial=$prefix==='initial-';
@@ -579,46 +596,46 @@ final class Job
                 if ($initial && $existing['node']!==$node) {
                     $config=$this->pve->request('GET','/nodes/'.rawurlencode($existing['node']).'/'.$existing['type'].'/'.$vmid.'/config');
                     if (str_contains((string)($config['description'] ?? ''),Pve::marker($this->instance))) {
-                        throw new Fault('本服务的 PVE 实例位于另一节点，请核对绑定',409);
+                        throw Fault::localized('message.this_services_pve_instance_is_on_another',409);
                     }
-                    throw new VmidConflict('VMID '.$vmid.' 已被其他实例占用',409);
+                    throw VmidConflict::localized('message.vmid_in_use',409,['vmid'=>$vmid]);
                 }
                 try { $owned=$this->pve->owned($this->instance,$vmid); }
                 catch (IdentityMismatch $e) {
-                    if ($initial) { throw new VmidConflict('VMID '.$vmid.' 已被其他实例占用',409); }
+                    if ($initial) { throw VmidConflict::localized('message.vmid_in_use',409,['vmid'=>$vmid]); }
                     throw $e;
                 }
-                if (!$owned) { throw new UnknownPveRequest('待核对：候选实例在检查期间发生变化',409); }
-                if (!empty($owned['config']['lock'])) { throw new Pending('等待创建锁释放'); }
+                if (!$owned) { throw UnknownPveRequest::localized('message.review_required_the_candidate_instance_changed_during',409); }
+                if (!empty($owned['config']['lock'])) { throw new Pending(Lang::text('message.waiting_for_the_creation_lock_to_clear')); }
                 $this->ctx['done'][$key]=true; $this->save();
             } elseif ($initial) {
                 if (empty($this->ctx['initial_allocation'])) {
-                    throw new UnknownPveRequest('待核对：旧开通任务未记录 PVE 创建结果',409);
+                    throw UnknownPveRequest::localized('message.review_required_the_previous_provisioning_task_did',409);
                 }
                 $this->pve->request('GET','/cluster/nextid',['vmid'=>$vmid]);
             }
         }
         $params=Catalog::params((int)$this->instance['service_id']);
         $password ??= $params['password'];
-        if ($password==='') { throw new Fault('服务登录密码尚未设置'); }
+        if ($password==='') { throw Fault::localized('message.the_service_login_password_has_not_been'); }
         if ($spec['kind']==='lxc') {
             $this->op($key,'POST','/nodes/'.rawurlencode($node).'/lxc',
                 $this->pve->createData($this->instance,$spec,$image,$vmid,$password),['vzcreate',$vmid,$node]);
         } else {
             $source=$this->pve->locate((int)$image['source']);
-            if (!$source || empty($source['template']) || $source['type']!=='qemu') { throw new Fault('KVM 模板不存在或不是模板'); }
+            if (!$source || empty($source['template']) || $source['type']!=='qemu') { throw Fault::localized('message.the_kvm_template_is_missing_or_is'); }
             $sourceConfig=$this->pve->request('GET','/nodes/'.rawurlencode($source['node']).'/qemu/'.$image['source'].'/config');
-            if (str_starts_with((string)($sourceConfig['ostype'] ?? ''),'win') || !array_filter($sourceConfig,fn($v)=>is_string($v)&&str_contains($v,'cloudinit'))) { throw new Fault('当前 KVM 驱动需要带 Cloud-Init 磁盘的 Linux 模板'); }
+            if (str_starts_with((string)($sourceConfig['ostype'] ?? ''),'win') || !array_filter($sourceConfig,fn($v)=>is_string($v)&&str_contains($v,'cloudinit'))) { throw Fault::localized('message.kvm_requires_a_linux_template_with_a'); }
             $sourceDisk=Pve::systemDisk($sourceConfig);
-            if (count(Disks::slots($sourceConfig,'qemu'))!==1) { throw new Fault('KVM 模板请只保留系统盘，数据盘在 Plan 中设置'); }
-            if ($spec['disk_gib']<$sourceDisk['gib']) { throw new Fault('套餐系统盘小于模板系统盘，无法克隆后缩容'); }
+            if (count(Disks::slots($sourceConfig,'qemu'))!==1) { throw Fault::localized('message.keep_only_the_system_disk_in_the'); }
+            if ($spec['disk_gib']<$sourceDisk['gib']) { throw Fault::localized('message.the_plans_system_disk_is_smaller_than'); }
             $clone=['newid'=>$vmid,'name'=>$this->instance['hostname'],'full'=>1,'pool'=>$this->pve->settings['pve_pool'],
                 'storage'=>$spec['system_storage'] ?? $this->pve->settings['storage'],'description'=>Pve::marker($this->instance)];
             if ($source['node']!==$node) { $clone['target']=$node; }
             $this->op($key,'POST','/nodes/'.rawurlencode($source['node']).'/qemu/'.$image['source'].'/clone',$clone,
                 ['qmclone',(int)$image['source'],$source['node']]);
-            $owned=$this->pve->owned($this->instance,$vmid) ?: throw new Fault('未找到属于本服务的克隆实例',409);
-            if (!empty($owned['config']['lock'])) { throw new Pending('等待克隆实例释放配置锁'); }
+            $owned=$this->pve->owned($this->instance,$vmid) ?: throw Fault::localized('message.could_not_find_a_cloned_instance_belonging',409);
+            if (!empty($owned['config']['lock'])) { throw new Pending(Lang::text('message.waiting_for_the_clone_configuration_lock_to')); }
             $path=$owned['path']; $config=$owned['config'];
             $set=['cores'=>$spec['cores'],'memory'=>$spec['memory_mib'],'cpulimit'=>$spec['cpu_limit'],'onboot'=>0,
                 'description'=>Pve::marker($this->instance),'ciuser'=>'root','cipassword'=>$password,'agent'=>'enabled=1'];
@@ -658,15 +675,15 @@ final class Job
                     $this->mutate(['vmid'=>null]);
                     $this->save();
                 });
-                $this->stage('VMID '.$vmid.' 已被占用，重新选择',3,5);
+                $this->stage('message.vmid_reselect',3,5,['vmid'=>$vmid]);
             }
         }
-        throw new Fault('VMID 连续冲突，请检查可用范围后重试',409);
+        throw Fault::localized('message.vmids_repeatedly_conflicted_check_the_available_range',409);
     }
 
     private function captureDisks(int $vmid,array $spec,string $prefix): void
     {
-        $owned=$this->pve->owned($this->instance,$vmid) ?: throw new Fault('创建后未找到实例');
+        $owned=$this->pve->owned($this->instance,$vmid) ?: throw Fault::localized('message.the_instance_could_not_be_found_after');
         $inventory=Util::unpack($this->instance['disks'] ?? null);
         $system=$this->instance['kind']==='lxc' ? 'rootfs' : Pve::systemDisk($owned['config'])['slot'];
         $definitions=[['id'=>0,'storage'=>$spec['system_storage'] ?? $this->pve->settings['storage'],'size_gib'=>$spec['disk_gib'],'mountpoint'=>'/']];
@@ -674,7 +691,7 @@ final class Job
         foreach ($definitions as $disk) {
             $id=(int)$disk['id']; $key=$id ? 'data-'.$id : 'system-'.$vmid;
             if (isset($inventory[$key])) {
-                if ((int)$inventory[$key]['vmid']!==$vmid) { throw new IdentityMismatch('数据盘仍绑定其他实例',409); }
+                if ((int)$inventory[$key]['vmid']!==$vmid) { throw IdentityMismatch::localized('message.the_data_disk_is_still_attached_to',409); }
                 continue;
             }
             $slot=$system;
@@ -684,18 +701,18 @@ final class Job
                     $intent=$prefix.'disk-'.$id;
                     if (!isset($this->ctx[$intent])) {
                         for ($index=1;$index<=30;$index++) { if (!isset($owned['config']['scsi'.$index])) { $this->ctx[$intent]='scsi'.$index; break; } }
-                        if (!isset($this->ctx[$intent])) { throw new Fault('没有可用的数据盘插槽'); }
+                        if (!isset($this->ctx[$intent])) { throw Fault::localized('message.no_data_disk_slot_is_available'); }
                         $this->save();
                     }
                     $slot=$this->ctx[$intent];
                     $this->op($intent,'PUT',$owned['path'].'/config',[$slot=>$disk['storage'].':'.Util::json($disk['size_gib']).',serial='.Disks::serial($this->instance,$id),'digest'=>$owned['config']['digest']]);
-                    $owned=$this->pve->owned($this->instance,$vmid) ?: throw new Fault('实例不存在');
+                    $owned=$this->pve->owned($this->instance,$vmid) ?: throw Fault::localized('message.instance_not_found');
                 }
             }
-            $value=$owned['config'][$slot] ?? throw new Fault('缺少预期的磁盘 '.$slot);
+            $value=$owned['config'][$slot] ?? throw new Fault(Lang::text('message.missing_expected_disk').$slot);
             $volume=Disks::volume($value);
             $actual=Pve::sizeGib($value);
-            if (!str_starts_with($volume,$disk['storage'].':') || $actual<(float)$disk['size_gib']) { throw new IdentityMismatch('新建磁盘的存储或容量不匹配',409); }
+            if (!str_starts_with($volume,$disk['storage'].':') || $actual<(float)$disk['size_gib']) { throw IdentityMismatch::localized('message.the_new_disk_does_not_match_the',409); }
             $disk['size_gib']=$actual;
             $inventory[$key]=$disk+['slot'=>$slot,'volume'=>$volume,'vmid'=>$vmid,'serial'=>$id ? Disks::serial($this->instance,$id) : '', 'fs_uuid'=>''];
             $this->mutate(['disks'=>Util::json($inventory)]);
@@ -707,14 +724,14 @@ final class Job
     {
         foreach (Util::unpack($this->instance['disks'] ?? null) as $key=>$disk) {
             if (!$disk['id'] || (int)$disk['vmid']===$target) { continue; }
-            if ((int)$disk['vmid']!==$source) { throw new IdentityMismatch('数据盘绑定异常',409); }
-            $from=$this->pve->owned($this->instance,$source) ?: throw new Fault('原实例不存在');
-            $to=$this->pve->owned($this->instance,$target) ?: throw new Fault('新实例不存在');
+            if ((int)$disk['vmid']!==$source) { throw IdentityMismatch::localized('message.unexpected_data_disk_binding',409); }
+            $from=$this->pve->owned($this->instance,$source) ?: throw Fault::localized('message.the_original_instance_does_not_exist');
+            $to=$this->pve->owned($this->instance,$target) ?: throw Fault::localized('message.the_new_instance_does_not_exist');
             $slot=$disk['slot']; $op=$prefix.$disk['id'];
             if (empty($this->ctx['done'][$op]) && empty($this->ctx['ops'][$op])) {
                 Disks::ownedVolumes($this->instance,$from['config'],$source);
                 Disks::ownedVolumes($this->instance,$to['config'],$target);
-                if (isset($to['config'][$slot])) { throw new IdentityMismatch('目标磁盘插槽已被使用',409); }
+                if (isset($to['config'][$slot])) { throw IdentityMismatch::localized('message.the_target_disk_slot_is_occupied',409); }
             }
             $lxc=$this->instance['kind']==='lxc';
             $this->op($op,'POST',$from['path'].($lxc ? '/move_volume' : '/move_disk'),[
@@ -722,10 +739,10 @@ final class Job
                 'digest'=>$from['config']['digest'],'target-digest'=>$to['config']['digest']],
                 [$lxc ? 'move_volume' : 'qmmove',$source.'-'.$slot.'>'.$target.'-'.$slot,$from['node']]);
             $from=$this->pve->owned($this->instance,$source); $to=$this->pve->owned($this->instance,$target);
-            if (isset($from['config'][$slot]) || !isset($to['config'][$slot])) { throw new Fault('数据盘转交尚未完成'); }
+            if (isset($from['config'][$slot]) || !isset($to['config'][$slot])) { throw Fault::localized('message.the_data_disk_transfer_has_not_finished'); }
             $value=$to['config'][$slot]; $volume=Disks::volume($value);
             if (!str_starts_with($volume,$disk['storage'].':') || Pve::sizeGib($value)!=(float)$disk['size_gib']
-                || (!$lxc && !str_contains($value,',serial='.$disk['serial']))) { throw new IdentityMismatch('转交后的数据盘身份不匹配',409); }
+                || (!$lxc && !str_contains($value,',serial='.$disk['serial']))) { throw IdentityMismatch::localized('message.the_transferred_data_disk_identity_does_not',409); }
             $inventory=Util::unpack($this->instance['disks']);
             $inventory[$key]=array_merge($disk,['volume'=>$volume,'vmid'=>$target]);
             $opposite=($prefix==='transfer-' ? 'rollback-transfer-' : 'transfer-').$disk['id'];
@@ -744,29 +761,29 @@ final class Job
             if (!$disk['id'] || (int)$disk['vmid']!==$vmid) { continue; }
             $op=$prefix.$disk['id'];
             if (!empty($this->ctx['done'][$op])) { continue; }
-            $owned=$this->pve->owned($this->instance,$vmid) ?: throw new Fault('实例不存在');
+            $owned=$this->pve->owned($this->instance,$vmid) ?: throw Fault::localized('message.instance_not_found');
             Disks::ownedVolumes($this->instance,$owned['config'],$vmid);
             $this->ctx[$op.'-since'] ??= time(); $this->save();
-            if (time()-$this->ctx[$op.'-since']>300) { throw new Fault('Guest Agent 或磁盘初始化超时，请检查模板和任务后重试'); }
+            if (time()-$this->ctx[$op.'-since']>300) { throw Fault::localized('message.guest_agent_or_disk_initialization_timed_out'); }
             if (empty($this->ctx[$op.'-pid'])) {
                 try { $this->pve->request('POST',$owned['path'].'/agent/ping'); }
                 catch (Fault $e) {
                     if (str_contains($e->getMessage(),'HTTP 403')) { throw $e; }
-                    throw new Pending('等待 Guest Agent');
+                    throw new Pending(Lang::text('message.waiting_for_guest_agent'));
                 }
                 $script=file_get_contents(__DIR__.'/../bin/guest-disks.sh');
                 $result=$this->pve->request('POST',$owned['path'].'/agent/exec',['command'=>['/bin/sh','-s','--',
                     $disk['serial'],Util::json($disk['size_gib']),$disk['mountpoint'],$mode,$disk['fs_uuid'] ?: '-',substr($this->instance['uuid'],0,24)],'input-data'=>$script]);
-                $this->ctx[$op.'-pid']=(int)$result['pid']; $this->save(); throw new Pending('数据盘初始化中');
+                $this->ctx[$op.'-pid']=(int)$result['pid']; $this->save(); throw new Pending(Lang::text('message.initializing_the_data_disk'));
             }
             try { $result=$this->pve->request('GET',$owned['path'].'/agent/exec-status',['pid'=>$this->ctx[$op.'-pid']]); }
             catch (Fault $e) { unset($this->ctx[$op.'-pid']); $this->save(); throw $e; }
-            if (empty($result['exited'])) { throw new Pending('数据盘初始化中'); }
+            if (empty($result['exited'])) { throw new Pending(Lang::text('message.initializing_the_data_disk')); }
             if (($result['exitcode'] ?? -1)!==0) {
                 unset($this->ctx[$op.'-pid'],$this->ctx[$op.'-since']); $this->save();
-                throw new Fault('数据盘 '.$disk['id'].' 初始化失败：'.mb_substr((string)($result['err-data'] ?? '请检查 Guest Agent 和镜像工具'),0,400));
+                throw new Fault(Lang::text('ui.data_disk').$disk['id'].Lang::text('message.initialization_failed').mb_substr((string)($result['err-data'] ?? Lang::text('message.check_guest_agent_and_the_tools_installed')),0,400));
             }
-            if (!preg_match('/WHMPVE_DISK:([0-9a-fA-F-]{36})/',(string)($result['out-data'] ?? ''),$match)) { throw new Fault('Guest Agent 未返回有效的磁盘挂载结果'); }
+            if (!preg_match('/WHMPVE_DISK:([0-9a-fA-F-]{36})/',(string)($result['out-data'] ?? ''),$match)) { throw Fault::localized('message.guest_agent_returned_an_invalid_mount_result'); }
             $inventory[$key]['fs_uuid']=strtolower($match[1]);
             $this->mutate(['disks'=>Util::json($inventory)]); $this->ctx['done'][$op]=true; $this->save();
         }
@@ -784,7 +801,7 @@ final class Job
             } else { $this->ctx['done'][$key]=true; $this->save(); }
         }
         $location=$this->pve->locate($vmid);
-        if ($location && $this->pve->owned($this->instance,$vmid)) { throw new Pending('等待实例删除完成'); }
+        if ($location && $this->pve->owned($this->instance,$vmid)) { throw new Pending(Lang::text('message.waiting_for_instance_deletion')); }
         $inventory=array_filter(Util::unpack($this->instance['disks'] ?? null),fn($disk)=>(int)$disk['vmid']!==$vmid);
         $this->mutate(['disks'=>Util::json($inventory)]);
     }
@@ -798,14 +815,14 @@ final class Job
     private function enableConfiguredOnboot(): void
     {
         if (!empty($this->pve->settings['onboot'])) {
-            $owned=$this->pve->owned($this->instance) ?? throw new Fault('PVE 实例不存在');
+            $owned=$this->pve->owned($this->instance) ?? throw Fault::localized('message.pve_instance_not_found');
             $this->pve->setOnboot($owned,true);
         }
     }
 
     private function disableSourceOnboot(int $vmid,string $key): void
     {
-        $owned=$this->pve->owned($this->instance,$vmid) ?? throw new Fault('原实例不存在');
+        $owned=$this->pve->owned($this->instance,$vmid) ?? throw Fault::localized('message.the_original_instance_does_not_exist');
         if (!isset($this->ctx[$key])) {
             $this->ctx[$key]=!empty($owned['config']['onboot']);
             $this->save();
@@ -816,7 +833,7 @@ final class Job
     private function restoreSourceOnboot(int $vmid,string $key,array $spec): void
     {
         if (!empty($this->ctx[$key]) && $this->serviceMayBoot($spec)) {
-            $owned=$this->pve->owned($this->instance,$vmid) ?? throw new Fault('原实例不存在');
+            $owned=$this->pve->owned($this->instance,$vmid) ?? throw Fault::localized('message.the_original_instance_does_not_exist');
             $this->pve->setOnboot($owned,true);
         }
     }
@@ -840,24 +857,24 @@ final class Job
         if (str_starts_with($this->task['actor'],'client:')) {
             $native=DB::table('tblhosting')->where('id',$this->instance['service_id'])->first(['userid','server']);
             if (!$this->ctx && (int)($native->userid ?? 0)!==(int)substr($this->task['actor'],7)) {
-                throw new Fault('服务已更换所有者，请重新提交操作',403);
+                throw Fault::localized('message.the_service_owner_changed_submit_the_action',403);
             }
             if ($this->instance['vmid']) { Catalog::assertServerBinding($this->instance,(int)($native->server ?? 0)); }
         }
         if ($action==='create') {
             Jobs::requireProvisioning($this->instance);
-            $this->stage('校验镜像与节点容量',1,5);
+            $this->stage('message.check_the_image_and_node_capacity',1,5);
             $image=Util::scoped('images',(int)$this->instance['image_id'],(int)$this->instance['server_id']);
             if (empty($this->ctx['node'])) { $this->ctx['node']=$this->pve->chooseNode($spec,$image); $this->save(); }
-            $this->stage('预留 VMID 与 IP',2,5);
+            $this->stage('message.reserve_the_vmid_and_ip_addresses',2,5);
             $this->pve->reserveIp($this->instance,$spec);
-            $this->stage('创建实例并配置系统',3,5);
+            $this->stage('message.create_the_instance_and_configure_the_system',3,5);
             $this->createInitial($spec,$image);
             Jobs::requireProvisioning($this->instance);
             if (empty($this->ctx['traffic-bound'])) { Traffic::bind($this->instance); $this->ctx['traffic-bound']=true; $this->save(); }
-            $this->stage('启动并初始化数据盘',4,5); $this->power('start',null,'initial-start');
+            $this->stage('message.start_the_instance_and_initialize_data_disks',4,5); $this->power('start',null,'initial-start');
             $this->initDisks((int)$this->instance['vmid'],'create','initial-init-');
-            $this->stage('同步服务与资源记录',5,5);
+            $this->stage('message.sync_service_and_resource_records',5,5);
             DB::connection()->transaction(function() use($spec) {
                 $service=(int)$this->instance['service_id'];
                 DB::table('mod_whmpve_instances')->where('service_id',$service)->lockForUpdate()->first(['id']);
@@ -877,7 +894,7 @@ final class Job
         }
         if ($action==='reinstall') { $this->reinstall($spec); return; }
         if ($action==='terminate') {
-            $this->stage('核对关联实例并执行清理',1,2);
+            $this->stage('message.verify_linked_instances_and_clean_up',1,2);
             $ids=[]; if ($this->instance['vmid']) { $ids[]=(int)$this->instance['vmid']; }
             foreach (DB::table('mod_whmpve_tasks')->where('service_id',$this->instance['service_id'])->get(['context']) as $task) {
                 $ctx=Util::unpack($task->context); foreach (['old_vmid','new_vmid'] as $key) { if (!empty($ctx[$key])) { $ids[]=(int)$ctx[$key]; } }
@@ -886,10 +903,10 @@ final class Job
                 try { $this->remove($id,'terminate-'.$id); }
                 catch (IdentityMismatch $e) {
                     if ($id===(int)$this->instance['vmid']) { throw $e; }
-                    Util::log('历史 VMID 已被其他实例使用：'.$id,(int)$this->instance['server_id'],(int)$this->instance['service_id'],'warning');
+                    Util::log(Lang::text('message.an_older_vmid_is_in_use_by').$id,(int)$this->instance['server_id'],(int)$this->instance['service_id'],'warning');
                 }
             }
-            $this->stage('回收 IP 并同步销毁状态',2,2);
+            $this->stage('message.release_ip_addresses_and_sync_the_deletion',2,2);
             DB::table('mod_whmpve_ips')->where('server_id',$this->instance['server_id'])->where('service_id',$this->instance['service_id'])->update(['state'=>'free','service_id'=>null,'updated_at'=>Util::now()]);
             Addons::terminateBilling($this->instance);
             $this->mutate(['vmid'=>null,'lifecycle'=>'terminated','power_state'=>'absent','power_updated_at'=>Util::now()]);
@@ -897,10 +914,10 @@ final class Job
             $this->finishStatus('Terminated'); return;
         }
         if ($action==='suspend' || $action==='unsuspend') {
-            $this->stage($action==='suspend' ? '关闭实例并暂停服务' : '恢复服务并启动实例',1,1);
+            $this->stage($action==='suspend' ? 'message.stop_the_instance_and_suspend_the_service' : 'message.unsuspend_the_service_and_start_the_instance',1,1);
             if ($action==='suspend') {
                 Util::moduleApi('UpdateClientProduct',['serviceid'=>$this->instance['service_id'],'suspendreason'=>'']);
-                $owned=$this->pve->owned($this->instance) ?: throw new Fault('实例不存在');
+                $owned=$this->pve->owned($this->instance) ?: throw Fault::localized('message.instance_not_found');
                 $this->op('disable-onboot','PUT',$owned['path'].'/config',['onboot'=>0]); $this->power('stop');
                 $this->mutate(['lifecycle'=>'suspended']); $this->finishStatus('Suspended');
             } else {
@@ -911,38 +928,38 @@ final class Job
             return;
         }
         if ($action==='change_package') {
-            $this->stage('校验目标规格',1,3);
+            $this->stage('message.verify_the_requested_specifications',1,3);
             $purchased=Catalog::spec($this->payload['spec'],(int)$this->instance['server_id']);
             $baseline=Util::unpack($this->instance['desired']);
             foreach (['ipv4_count','ipv6_count','ip_pool_ids'] as $key) {
-                if ($purchased[$key]!==$baseline[$key]) { throw new Fault('套餐升级不能直接变更 IP 分配'); }
+                if ($purchased[$key]!==$baseline[$key]) { throw Fault::localized('message.a_plan_change_cannot_change_ip_assignments'); }
             }
             $target=InstanceConfig::afterPackage($purchased,$baseline,$spec);
-            if ($target['kind']!==$spec['kind'] || $target['disk_gib']<$spec['disk_gib']) { throw new Fault('不能更换实例类型或缩小磁盘'); }
-            if ($target['system_storage']!==($spec['system_storage'] ?? $this->pve->settings['storage'])) { throw new Fault('套餐升级不能更换系统盘存储'); }
+            if ($target['kind']!==$spec['kind'] || $target['disk_gib']<$spec['disk_gib']) { throw Fault::localized('message.the_instance_type_cannot_be_changed_and'); }
+            if ($target['system_storage']!==($spec['system_storage'] ?? $this->pve->settings['storage'])) { throw Fault::localized('message.a_plan_upgrade_cannot_change_the_system'); }
             $original=array_column($spec['data_disks'] ?? [],null,'id');
-            if (count($original)!==count($target['data_disks'])) { throw new Fault('套餐升级不能添加或删除数据盘'); }
+            if (count($original)!==count($target['data_disks'])) { throw Fault::localized('message.a_plan_upgrade_cannot_add_or_remove'); }
             foreach ($target['data_disks'] as &$disk) {
-                $old=$original[$disk['id']] ?? throw new Fault('套餐升级不能更换数据盘编号');
-                if ($disk['storage']!==$old['storage'] || $disk['size_gib']<$old['size_gib']) { throw new Fault('套餐升级不能更换数据盘存储或缩小数据盘'); }
+                $old=$original[$disk['id']] ?? throw Fault::localized('message.a_plan_upgrade_cannot_change_data_disk');
+                if ($disk['storage']!==$old['storage'] || $disk['size_gib']<$old['size_gib']) { throw Fault::localized('message.a_plan_upgrade_cannot_change_data_disk_2'); }
                 $disk['mountpoint']=$old['mountpoint'];
             }
             unset($disk);
             foreach ($purchased['data_disks'] as &$disk) { $disk['mountpoint']=$original[$disk['id']]['mountpoint']; }
             unset($disk);
-            $owned=$this->pve->owned($this->instance) ?: throw new Fault('实例不存在');
+            $owned=$this->pve->owned($this->instance) ?: throw Fault::localized('message.instance_not_found');
             Disks::ownedVolumes($this->instance,$owned['config'],(int)$this->instance['vmid']);
             if ($this->instance['kind']==='qemu' && array_filter($target['data_disks'],fn($d)=>$d['size_gib']>$original[$d['id']]['size_gib'])) {
-                if (($this->pve->request('GET',$owned['path'].'/status/current')['status'] ?? '')!=='running') { throw new Fault('扩容 KVM 数据盘前请先启动实例'); }
+                if (($this->pve->request('GET',$owned['path'].'/status/current')['status'] ?? '')!=='running') { throw Fault::localized('message.start_the_instance_before_expanding_a_kvm'); }
                 $this->pve->request('POST',$owned['path'].'/agent/ping');
             }
-            $this->stage('更新 CPU、内存和网络限制',2,3);
+            $this->stage('message.update_cpu_memory_and_network_limits',2,3);
             $data=['cores'=>$target['cores'],'memory'=>$target['memory_mib'],'cpulimit'=>$target['cpu_limit']];
             if ($this->instance['kind']==='lxc') { $data['swap']=$target['swap_mib']; }
             $data=array_merge($data,Pve::rates($owned['config'],Traffic::speed($target,Traffic::row((int)$this->instance['service_id']))));
             $this->op('upgrade-config','PUT',$owned['path'].'/config',$data);
             $this->growDisks($owned['path'],$spec,$target);
-            $this->stage('保存已应用规格',3,3); $this->mutate(['desired'=>Util::json($purchased),'applied'=>Util::json($target),'plan_id'=>$this->payload['plan_id'] ?? $this->instance['plan_id']]); return;
+            $this->stage('message.save_the_applied_specifications',3,3); $this->mutate(['desired'=>Util::json($purchased),'applied'=>Util::json($target),'plan_id'=>$this->payload['plan_id'] ?? $this->instance['plan_id']]); return;
         }
         if ($action==='addon_apply') { $this->applyAddon($spec); return; }
         if (in_array($action,['edit_config','traffic','traffic_reset'],true)) {
@@ -952,7 +969,7 @@ final class Job
                     if (!empty($this->ctx['quota_edited'])) { $this->traffic($this->payload['spec'],3,3); }
                 } elseif ($action==='traffic') { $this->traffic($spec); }
                 else {
-                    $this->stage('重置本期流量',1,2);
+                    $this->stage('message.reset_traffic_usage_for_this_period',1,2);
                     $applied=Purchases::apply($this->instance,(int)$this->payload['invoice_id'],$this->pve);
                     if ($applied || !empty($this->ctx['ops']['quota-resume']) || !empty($this->ctx['ops']['quota-resume-cancelled'])
                         || !empty($this->ctx['done']['quota-resume'])) {
@@ -961,7 +978,7 @@ final class Job
                 }
             } catch (UnknownPveRequest $e) {
                 if (empty($this->ctx['ops']['quota-resume']) && empty($this->ctx['ops']['quota-resume-cancelled'])) { throw $e; }
-                throw new Pending('等待 PVE 连接后核对电源任务');
+                throw new Pending(Lang::text('message.wait_for_the_pve_connection_and_check'));
             }
             return;
         }
@@ -969,20 +986,20 @@ final class Job
         if ($action==='backup_restore') { $this->restoreBackup($spec); return; }
         if ($action==='lxc_password_reset') { $this->resetLxcPassword($spec); return; }
         if ($action==='backup_delete') {
-            $this->stage('删除备份',1,1);
+            $this->stage('ui.delete_backup',1,1);
             $record=Backups::records($this->instance)->where('id',(int)$this->payload['backup_id'])->first();
             if ($record) { $this->deleteBackup((array)$record); }
             return;
         }
         if ($action==='password') {
-            if ($this->instance['kind']==='lxc') { throw new Fault('LXC 运行中改密请通过网页终端执行 passwd；重装会使用服务登录密码'); }
-            $this->stage('重置系统密码',1,1);
-            $owned=$this->pve->owned($this->instance) ?: throw new Fault('实例不存在');
+            if ($this->instance['kind']==='lxc') { throw Fault::localized('message.to_change_the_password_of_a_running'); }
+            $this->stage('message.reset_the_system_password',1,1);
+            $owned=$this->pve->owned($this->instance) ?: throw Fault::localized('message.instance_not_found');
             $password=decrypt($this->payload['encrypted_password']);
             $this->op('guest-password','POST',$owned['path'].'/agent/set-user-password',['username'=>'root','password'=>$password]);
             DB::table('tblhosting')->where('id',$this->instance['service_id'])->update(['password'=>$this->payload['encrypted_password']]); return;
         }
-        $this->stage('执行电源操作并核验状态',1,1); $this->power($action);
+        $this->stage('message.perform_the_power_action_and_verify_the',1,1); $this->power($action);
     }
 
     private function reinstall(array $spec): void
@@ -993,17 +1010,17 @@ final class Job
                 Traffic::bind($this->instance);
                 $this->ctx['traffic-bound']=true; $this->save();
             }
-            $this->stage('清理已停止的原实例',6,6);
+            $this->stage('message.clean_up_the_stopped_original_instance',6,6);
             $this->finishReplacement((int)$this->ctx['old_vmid'],$spec);
             return;
         }
         if (isset($this->ctx['reinstall_error'])) { $this->rollbackReinstall($spec); }
 
-        $this->stage('校验镜像与数据盘',1,6);
+        $this->stage('message.verify_the_image_and_data_disks',1,6);
         $image=Util::scoped('images',(int)$this->payload['image_id'],(int)$this->instance['server_id']);
-        if (!Catalog::imageAllowed($image,$spec)) { throw new Fault('目标镜像与实例配置不兼容'); }
+        if (!Catalog::imageAllowed($image,$spec)) { throw Fault::localized('message.the_target_image_is_incompatible_with_the'); }
         if (!isset($this->ctx['old_vmid'])) {
-            $old=$this->pve->owned($this->instance) ?: throw new Fault('原实例不存在');
+            $old=$this->pve->owned($this->instance) ?: throw Fault::localized('message.the_original_instance_does_not_exist');
             Disks::ownedVolumes($this->instance,$old['config'],(int)$this->instance['vmid']);
             if (!Util::unpack($this->instance['disks'] ?? null)) {
                 $this->captureDisks((int)$this->instance['vmid'],$spec,'legacy-');
@@ -1016,9 +1033,9 @@ final class Job
         }
         $old=(int)$this->ctx['old_vmid']; $new=(int)$this->ctx['new_vmid'];
         if ($old===$new || $old!==(int)$this->instance['vmid']) {
-            throw new IdentityMismatch('重装实例绑定发生变化，请核对后重试',409);
+            throw IdentityMismatch::localized('message.the_reinstall_instance_binding_changed_verify_it',409);
         }
-        $this->stage('准备新系统（原实例仍保留）',2,6);
+        $this->stage('message.prepare_the_new_system_the_original_instance',2,6);
         if (empty($this->ctx['done']['replacement-ready'])) {
             $runtime=$spec;
             $runtime['bandwidth_mbps']=Traffic::speed($spec,Traffic::row((int)$this->instance['service_id']));
@@ -1033,29 +1050,29 @@ final class Job
             $this->ctx['reinstall_cutover']=true; $this->save();
         }
         try {
-            $this->stage('停止原实例并转交数据盘',3,6);
+            $this->stage('message.stop_the_original_instance_and_transfer_the',3,6);
             $this->disableSourceOnboot($old,'reinstall_onboot');
             $this->power('shutdown',$old,'old-shutdown');
-            if ($this->reinstallPowerState($old)!=='stopped') { throw new Pending('等待原实例确认关机'); }
+            if ($this->reinstallPowerState($old)!=='stopped') { throw new Pending(Lang::text('message.waiting_for_the_original_instance_to_shut')); }
             $this->transferDisks($old,$new,'transfer-');
             $this->verifyReinstallDisks($new,$spec);
-            $this->stage('启动并核验新系统',4,6);
+            $this->stage('message.start_and_verify_the_new_system',4,6);
             $this->power('start',$new,'replacement-start');
             $this->initDisks($new,'restore','replacement-init-');
             if ($this->reinstallPowerState($new)!=='running' || $this->reinstallPowerState($old)!=='stopped') {
-                throw new Fault('重装实例电源状态未通过核验');
+                throw Fault::localized('message.could_not_verify_the_power_state_of');
             }
             $this->verifyReinstallDisks($new,$spec);
         } catch (Pending $e) {
             throw $e;
         } catch (UnknownPveRequest $e) {
-            $this->stage('待核对 PVE 任务和数据盘',3,6);
+            $this->stage('message.review_the_pve_task_and_data_disks',3,6);
             throw $e;
         } catch (\Throwable $e) {
             $this->ctx['reinstall_error']=$e->getMessage(); $this->save();
             $this->rollbackReinstall($spec);
         }
-        $this->stage('切换服务绑定',5,6);
+        $this->stage('message.switch_the_service_binding',5,6);
         DB::connection()->transaction(function() use($image,$new) {
             $this->mutate(['vmid'=>$new,'node'=>$this->ctx['node'],'image_id'=>$image['id'],'lifecycle'=>'active',
                 'metric_since'=>$this->ctx['new_epoch'] ?? time(),'power_state'=>'running','power_updated_at'=>Util::now()]);
@@ -1065,46 +1082,46 @@ final class Job
             Traffic::bind($this->instance);
             $this->ctx['traffic-bound']=true; $this->save();
         });
-        $this->stage('清理已停止的原实例',6,6);
+        $this->stage('message.clean_up_the_stopped_original_instance',6,6);
         $this->finishReplacement($old,$spec);
     }
 
     private function reinstallPowerState(int $vmid): string
     {
-        $owned=$this->pve->owned($this->instance,$vmid) ?: throw new Fault('找不到待核验的实例',409);
+        $owned=$this->pve->owned($this->instance,$vmid) ?: throw Fault::localized('message.could_not_find_the_instance_to_verify',409);
         $state=$this->pve->request('GET',$owned['path'].'/status/current')['status'] ?? '';
-        if (!in_array($state,['running','stopped'],true)) { throw new UnknownPveRequest('待核对：无法确认实例电源状态',409); }
+        if (!in_array($state,['running','stopped'],true)) { throw UnknownPveRequest::localized('message.review_required_could_not_verify_the_instance',409); }
         return $state;
     }
 
     private function verifyReinstallDisks(int $vmid,array $spec): void
     {
-        $owned=$this->pve->owned($this->instance,$vmid) ?: throw new Fault('找不到待核验的实例',409);
+        $owned=$this->pve->owned($this->instance,$vmid) ?: throw Fault::localized('message.could_not_find_the_instance_to_verify',409);
         $inventory=Disks::ownedVolumes($this->instance,$owned['config'],$vmid);
         $actual=array_column($inventory,'id');
         $expected=array_merge([0],array_column($spec['data_disks'] ?? [],'id'));
         sort($actual); sort($expected);
-        if ($actual!==$expected) { throw new IdentityMismatch('待核对：数据盘未全部归位',409); }
+        if ($actual!==$expected) { throw IdentityMismatch::localized('message.review_required_some_data_disks_have_not',409); }
     }
 
     private function rollbackReinstall(array $spec): never
     {
         $old=(int)$this->ctx['old_vmid']; $new=(int)$this->ctx['new_vmid'];
-        if ($old===$new || $old!==(int)$this->instance['vmid']) { throw new IdentityMismatch('原实例绑定已变更',409); }
+        if ($old===$new || $old!==(int)$this->instance['vmid']) { throw IdentityMismatch::localized('message.the_original_instance_binding_changed',409); }
         $error=$this->ctx['reinstall_error'];
         $wasRunning=$this->ctx['reinstall_was_running'] ?? null;
-        $this->stage('正在回滚重装',3,6);
+        $this->stage('message.rolling_back_the_reinstall',3,6);
         if (empty($this->ctx['reinstall_disks_returned'])) {
             $returning=(bool)array_filter(array_keys($this->ctx['ops'] ?? []),fn($key)=>str_starts_with($key,'rollback-transfer-'));
             if (!$returning) {
                 foreach ([$old,$new] as $vmid) {
-                    $owned=$this->pve->owned($this->instance,$vmid) ?: throw new Fault('待核对：无法确认回滚实例',409);
+                    $owned=$this->pve->owned($this->instance,$vmid) ?: throw Fault::localized('message.review_required_could_not_verify_the_rollback',409);
                     Disks::ownedVolumes($this->instance,$owned['config'],$vmid);
                 }
             }
             $moved=array_filter(Util::unpack($this->instance['disks'] ?? null),fn($disk)=>$disk['id'] && (int)$disk['vmid']===$new);
             if (($returning || $moved) && $this->reinstallPowerState($old)!=='stopped') {
-                throw new Fault('待核对：原实例正在运行，请先核对电源状态',409);
+                throw Fault::localized('message.review_required_the_original_instance_is_running',409);
             }
             $this->power('stop',$new,'rollback-new-stop');
             $this->transferDisks($new,$old,'rollback-transfer-');
@@ -1118,7 +1135,7 @@ final class Job
         }
         $this->restoreSourceOnboot($old,'reinstall_onboot',$spec);
         $this->remove($new,'rollback-remove');
-        $message=($wasRunning===null ? '重装失败，数据盘已归位，原电源状态待核对：' : '重装失败，已回滚原实例：').$error;
+        $message=($wasRunning===null ? Lang::text('message.reinstall_failed_the_data_disks_are_back') : Lang::text('message.reinstall_failed_the_original_instance_was_restored')).$error;
         $this->ctx=['reinstall_rolled_back'=>$message]; $this->save();
         throw new Fault($message);
     }
@@ -1130,7 +1147,7 @@ final class Job
         $vmid=(int)$this->instance['vmid'];
         if (!isset($this->ctx['backup_manifest'])) {
             if (!Backups::checkCreate($this->instance,$automatic,$this->payload['cutoff'] ?? null)) {
-                $this->stage('已跳过自动备份',1,1); return;
+                $this->stage('message.automatic_backup_skipped',1,1); return;
             }
             $limit=Backups::policy($this->instance)['limit'];
             if ($automatic) {
@@ -1140,15 +1157,15 @@ final class Job
                     if ($old) { Backups::requireRotationAccess($this->pve,$this->instance,(array)$old); }
                 }
             }
-            $owned=$this->pve->owned($this->instance) ?: throw new Fault('实例不存在');
+            $owned=$this->pve->owned($this->instance) ?: throw Fault::localized('message.instance_not_found');
             $this->prepareBackup($spec,$owned);
             $this->ctx['backup_limit']=$limit;
             $this->save();
         }
-        if ((int)$this->ctx['source_vmid']!==$vmid) { throw new Fault('实例已更换，请重新创建备份'); }
-        $this->stage('创建 PVE 备份',1,2);
+        if ((int)$this->ctx['source_vmid']!==$vmid) { throw Fault::localized('message.the_instance_changed_create_a_new_backup'); }
+        $this->stage('message.create_a_pve_backup',1,2);
         $archive=$this->createPveBackup('snapshot');
-        $this->stage('保存备份记录',2,2);
+        $this->stage('message.save_the_backup_record',2,2);
         DB::table('mod_whmpve_backups')->updateOrInsert(['task_id'=>$task],[
             'server_id'=>$this->instance['server_id'],'service_id'=>$this->instance['service_id'],'source_vmid'=>$vmid,
             'automatic'=>$automatic,'volume'=>$archive['volid'],'size'=>$archive['size'] ?? 0,
@@ -1169,7 +1186,7 @@ final class Job
             $value=$owned['config'][$slot];
             preg_match('/(?:^|,)backup=([01])(?:,|$)/',$value,$flag);
             if (($flag[1] ?? '')==='0' || ($disk['id'] && $this->instance['kind']==='lxc' && ($flag[1] ?? '')!=='1')) {
-                throw new Fault('请先启用磁盘 '.$slot.' 的备份');
+                throw Fault::localized('message.disk_backup_required',422,['disk'=>$slot]);
             }
             $disk['size_gib']=Pve::sizeGib($value);
         }
@@ -1186,7 +1203,7 @@ final class Job
             'vmid'=>$this->ctx['source_vmid'],'storage'=>$this->ctx['backup_storage'],'mode'=>$mode,
             'remove'=>0,'notes-template'=>Backups::note($this->instance,(int)$this->task['id']),
         ]);
-        return $this->findTaskBackup() ?? throw new Fault('未找到本次任务生成的 PVE 备份');
+        return $this->findTaskBackup() ?? throw Fault::localized('message.could_not_find_the_pve_backup_created');
     }
 
     private function findTaskBackup(): ?array
@@ -1197,7 +1214,7 @@ final class Job
         $matches=array_values(array_filter($rows,fn($row)=>($row['notes'] ?? '')===$note));
         if (!$matches) { return null; }
         if (count($matches)!==1 || !str_starts_with($matches[0]['volid'] ?? '',$storage.':')) {
-            throw new IdentityMismatch('无法唯一识别本次任务的 PVE 归档',409);
+            throw IdentityMismatch::localized('message.could_not_uniquely_identify_the_pve_archive',409);
         }
         return $matches[0];
     }
@@ -1233,7 +1250,7 @@ final class Job
             try {
                 if (empty($this->ctx['password_reset_pending'])) { $this->preparePasswordReset($spec); }
                 $this->checkPasswordResetAccount();
-                $this->stage('关机并生成临时备份',1,6);
+                $this->stage('message.shut_down_and_create_a_temporary_backup',1,6);
                 if (!isset($this->ctx['password_reset_archive'])) {
                     if ($this->ctx['reset_onboot']) { $this->setResetOnboot($this->ctx['old_vmid'],0,'reset-disable-onboot'); }
                     $this->power('shutdown',$this->ctx['old_vmid'],'restore-stop');
@@ -1254,7 +1271,7 @@ final class Job
                 $this->rollbackPasswordReset();
             }
         }
-        $this->stage('清理临时归档和原容器',6,6);
+        $this->stage('message.clean_up_the_temporary_archive_and_original',6,6);
         $this->clearPasswordResetArchive();
         $this->remove($this->ctx['old_vmid'],'remove-old');
         if (($this->ctx['reset_onboot'] || !empty($this->pve->settings['onboot'])) && $this->serviceMayBoot($spec)) {
@@ -1267,18 +1284,18 @@ final class Job
     private function preparePasswordReset(array $spec): void
     {
         $this->checkPasswordResetAccount();
-        $owned=$this->pve->owned($this->instance) ?: throw new Fault('原容器不存在');
+        $owned=$this->pve->owned($this->instance) ?: throw Fault::localized('message.the_original_container_does_not_exist');
         $node='/nodes/'.rawurlencode($owned['node']);
         $packages=$this->pve->request('GET',$node.'/apt/versions');
         $version=array_column($packages,'OldVersion','Package')['pve-container'] ?? '';
         if (!version_compare((string)$version,'6.1.16','>=')) {
-            throw new Fault('LXC 重置密码需要 pve-container 6.1.16 或更新版本');
+            throw Fault::localized('message.resetting_an_lxc_password_requires_pve_container');
         }
         $this->prepareBackup($spec,$owned);
         $storage=array_column($this->pve->request('GET',$node.'/storage',['content'=>'backup','enabled'=>1]),null,'storage');
         $backup=$this->ctx['backup_storage'];
         if (empty($storage[$backup]['active']) || ($storage[$backup]['avail'] ?? 0)<=0) {
-            throw new Fault('备份存储不可用或空间不足');
+            throw Fault::localized('message.the_backup_storage_is_unavailable_or_out');
         }
         $targets=array_column($this->pve->request('GET',$node.'/storage',['content'=>'rootdir','enabled'=>1]),null,'storage');
         $needed=[];
@@ -1287,13 +1304,13 @@ final class Job
         }
         foreach ($needed as $name=>$bytes) {
             if (empty($targets[$name]['active']) || ($targets[$name]['avail'] ?? 0)<$bytes) {
-                throw new Fault('恢复存储 '.$name.' 不可用或空间不足');
+                throw Fault::localized('message.restore_storage_unavailable',422,['storage'=>$name]);
             }
         }
         $this->ctx['new_vmid']=$this->pve->allocateId();
         $this->ctx['old_vmid']=$owned['vmid'];
         $status=$this->pve->request('GET',$owned['path'].'/status/current');
-        if (!empty($status['ha']['managed'])) { throw new Fault('当前容器由 PVE HA 管理，无法保持关机用于重置密码'); }
+        if (!empty($status['ha']['managed'])) { throw Fault::localized('message.pve_ha_manages_this_container_and_may'); }
         $this->ctx['restore_running']=($status['status'] ?? '')==='running';
         $this->ctx['reset_onboot']=!empty($owned['config']['onboot']);
         $this->ctx['password_reset_pending']=true;
@@ -1306,7 +1323,7 @@ final class Job
             $current=DB::table('mod_whmpve_instances')->where('id',$this->instance['id'])->lockForUpdate()->first();
             if (!$current || (int)$current->vmid!==(int)$this->ctx['old_vmid'] || $current->uuid!==$this->instance['uuid']
                 || (int)$current->server_id!==(int)$this->instance['server_id'] || $current->lifecycle!=='active') {
-                throw new Fault('原容器绑定或状态已变更',409);
+                throw Fault::localized('message.the_original_container_binding_or_state_changed',409);
             }
         }
         $query=DB::table('tblhosting')->where('id',$this->instance['service_id']);
@@ -1314,14 +1331,14 @@ final class Job
         $actor=$this->task['actor'];
         if (!$native || $native->domainstatus!=='Active' || $this->instance['lifecycle']!=='active'
             || (str_starts_with($actor,'client:') && (int)substr($actor,7)!==(int)$native->userid)) {
-            throw new Fault('服务状态或所有者已变更，请重新提交操作',403);
+            throw Fault::localized('message.the_service_status_or_owner_changed_submit',403);
         }
         $product=DB::table('tblproducts')->where('id',$native->packageid);
         if (($lock ? $product->lockForUpdate() : $product)->value('servertype')!=='whmpve') {
-            throw new Fault('服务模块已变更，请重新提交操作',403);
+            throw Fault::localized('message.the_service_module_changed_submit_the_action',403);
         }
         if (str_starts_with($actor,'admin:') && !Http::adminServicePermissions($actor)['operate']) {
-            throw new Fault('服务管理权限已变更，请重新提交操作',403);
+            throw Fault::localized('message.your_service_management_permissions_changed_submit_the',403);
         }
         if (str_starts_with($actor,'client:')) {
             $client=DB::table('tblclients')->where('id',$native->userid);
@@ -1336,23 +1353,23 @@ final class Job
                 $admin=DB::table('tbladmins')->where('id',(int)$match[1])->where('disabled',0);
                 $allowed=(bool)($lock ? $admin->lockForUpdate() : $admin)->first(['id']);
             }
-            if (!$client || strcasecmp((string)$client->status,'Closed')===0 || !$allowed) { throw new Fault('服务管理权限已变更，请重新提交操作',403); }
+            if (!$client || strcasecmp((string)$client->status,'Closed')===0 || !$allowed) { throw Fault::localized('message.your_service_management_permissions_changed_submit_the',403); }
         }
     }
 
     private function checkPasswordResetSource(): void
     {
-        if ((int)$this->instance['vmid']!==(int)$this->ctx['old_vmid']) { throw new Fault('原容器绑定已变更',409); }
-        $old=$this->pve->owned($this->instance) ?: throw new Fault('原容器不存在');
+        if ((int)$this->instance['vmid']!==(int)$this->ctx['old_vmid']) { throw Fault::localized('message.the_original_container_binding_changed',409); }
+        $old=$this->pve->owned($this->instance) ?: throw Fault::localized('message.the_original_container_does_not_exist');
         if (($this->pve->request('GET',$old['path'].'/status/current')['status'] ?? '')!=='stopped') {
-            throw new Fault('原容器未保持关机，请重新提交重置密码',409);
+            throw Fault::localized('message.the_original_container_did_not_stay_powered',409);
         }
     }
 
     private function setResetOnboot(int $vmid,int $enabled,string $key): void
     {
         if (!empty($this->ctx['done'][$key])) { return; }
-        $owned=$this->pve->owned($this->instance,$vmid) ?: throw new Fault('容器不存在');
+        $owned=$this->pve->owned($this->instance,$vmid) ?: throw Fault::localized('message.container_not_found');
         $this->op($key,'PUT',$owned['path'].'/config',['onboot'=>$enabled,'digest'=>$owned['config']['digest']]);
     }
 
@@ -1372,7 +1389,7 @@ final class Job
             $this->deleteArchive($record,$key);
             if (Backups::archive($this->pve,$this->instance,$record)) {
                 unset($this->ctx['ops'][$key],$this->ctx['done'][$key]); $this->save();
-                throw new Fault('本次临时归档仍在 PVE，请重试清理');
+                throw Fault::localized('message.the_temporary_archive_is_still_in_pve');
             }
         }
         $this->ctx['password_reset_archive_deleted']=true;
@@ -1392,7 +1409,7 @@ final class Job
 
     private function rollbackPasswordReset(): void
     {
-        $this->stage('恢复原容器',5,6);
+        $this->stage('message.restore_the_original_container',5,6);
         $new=(int)$this->ctx['new_vmid'];
         $replacement=null;
         if (!empty($this->ctx['done']['restore-archive']) || !empty($this->ctx['password_reset_restore_submitted'])) {
@@ -1402,7 +1419,7 @@ final class Job
             $this->power('stop',$new,'reset-rollback-stop');
             if (($this->pve->request('GET',$replacement['path'].'/status/current')['status'] ?? '')!=='stopped') {
                 unset($this->ctx['done']['reset-rollback-stop']); $this->save();
-                throw new Pending('等待副本确认关机');
+                throw new Pending(Lang::text('message.waiting_for_the_copy_to_shut_down'));
             }
         }
         $active=DB::table('tblhosting')->where('id',$this->instance['service_id'])->value('domainstatus')==='Active';
@@ -1419,13 +1436,13 @@ final class Job
         $this->clearPasswordResetArchive();
         $error=$this->ctx['password_reset_error'];
         $this->ctx=[]; $this->save();
-        throw new Fault('重置密码失败，已保留原容器：'.$error);
+        throw new Fault(Lang::text('message.password_reset_failed_the_original_container_was').$error);
     }
 
     private function restoreBackup(array $spec,?array $temporary=null): void
     {
         if (!empty($this->ctx['restore_bound'])) {
-            $this->stage('清理原实例',5,5);
+            $this->stage('message.clean_up_the_original_instance',5,5);
             $this->finishReplacement((int)$this->ctx['old_vmid'],$spec);
             return;
         }
@@ -1438,14 +1455,14 @@ final class Job
                 unset($this->ctx['ops'][$key],$this->ctx['done'][$key]);
             }
             $this->save();
-            throw new Fault('备份启动失败，已保留原实例：'.$error);
+            throw new Fault(Lang::text('message.could_not_start_the_restored_backup_the').$error);
         }
-        if (!$temporary) { $this->stage('校验备份与原实例',1,5); }
+        if (!$temporary) { $this->stage('message.verify_the_backup_and_the_original_instance',1,5); }
         $record=$temporary ?? Backups::record($this->instance,(int)$this->payload['backup_id']);
         $manifest=Util::unpack($record['manifest']);
         Util::scoped('images',(int)$manifest['image_id'],(int)$this->instance['server_id']);
         $vmid=(int)$this->instance['vmid'];
-        $owned=$this->pve->owned($this->instance) ?: throw new Fault('原实例不存在');
+        $owned=$this->pve->owned($this->instance) ?: throw Fault::localized('message.the_original_instance_does_not_exist');
         $current=Disks::ownedVolumes($this->instance,$owned['config'],$vmid);
         if (!$current) {
             $this->captureDisks($vmid,$spec,'restore-legacy-');
@@ -1454,16 +1471,16 @@ final class Job
         $lxc=$this->instance['kind']==='lxc';
         $disks=$manifest['disks'] ?? [];
         if (!$disks || array_diff_key($disks,$current) || array_diff_key($current,$disks)) {
-            throw new Fault('原实例的磁盘与备份不匹配');
+            throw Fault::localized('message.the_original_instances_disks_do_not_match');
         }
         $sizes=[];
         foreach ($disks as $slot=>$disk) {
             if ($disk['id']!==$current[$slot]['id'] || $disk['storage']!==$current[$slot]['storage'] ||
-                $disk['mountpoint']!==$current[$slot]['mountpoint']) { throw new Fault('原实例的磁盘与备份不匹配'); }
+                $disk['mountpoint']!==$current[$slot]['mountpoint']) { throw Fault::localized('message.the_original_instances_disks_do_not_match'); }
             $sizes[$slot]=max(Pve::sizeGib($owned['config'][$slot]),(float)$disk['size_gib']);
         }
         if (empty($this->ctx['done']['restore-archive']) && !Backups::archive($this->pve,$this->instance,$record)) {
-            throw new Fault('PVE 上的备份文件不存在',404);
+            throw Fault::localized('message.the_backup_file_was_not_found_in',404);
         }
         if (!isset($this->ctx['new_vmid'])) {
             $this->ctx['old_vmid']=$vmid;
@@ -1472,7 +1489,7 @@ final class Job
             $this->save();
         }
         $new=(int)$this->ctx['new_vmid'];
-        $this->stage('恢复备份副本',2,$temporary ? 6 : 5);
+        $this->stage('message.restore_a_copy_of_the_backup',2,$temporary ? 6 : 5);
         $params=['vmid'=>$new,'pool'=>$this->pve->settings['pve_pool'],'unique'=>1,'onboot'=>0];
         if ($lxc) {
             $params+=['ostemplate'=>$record['volume'],'restore'=>1,'start'=>0];
@@ -1480,7 +1497,7 @@ final class Job
                 $password=decrypt($this->payload['encrypted_password']);
                 if (preg_match('#^\$(?:1|2[axy]?|5|6)\$[a-zA-Z0-9./]{1,16}\$[a-zA-Z0-9./]+$#D',$password)) {
                     $password=crypt($password,'$6$'.bin2hex(random_bytes(8)).'$');
-                    if (!str_starts_with($password,'$6$')) { throw new Fault('无法为新密码生成散列'); }
+                    if (!str_starts_with($password,'$6$')) { throw Fault::localized('message.could_not_hash_the_new_password'); }
                 }
                 $params['password']=$password;
             }
@@ -1489,8 +1506,8 @@ final class Job
             }
         } else { $params['archive']=$record['volume']; }
         $this->op('restore-archive','POST','/nodes/'.rawurlencode($owned['node']).'/'.$this->instance['kind'],$params);
-        $replacement=$this->pve->owned($this->instance,$new) ?: throw new Fault('找不到备份副本');
-        $this->stage('核验并配置备份副本',3,$temporary ? 6 : 5);
+        $replacement=$this->pve->owned($this->instance,$new) ?: throw Fault::localized('message.the_restored_backup_copy_was_not_found');
+        $this->stage('message.verify_and_configure_the_backup_copy',3,$temporary ? 6 : 5);
         $config=$replacement['config'];
         $inventory=$this->registerRestoredDisks($replacement,$disks);
         foreach ($sizes as $slot=>$size) {
@@ -1502,7 +1519,7 @@ final class Job
         $config=$this->pve->request('GET',$replacement['path'].'/config');
         foreach ($sizes as $slot=>$size) {
             $actual=Pve::sizeGib($config[$slot]);
-            if ($actual<$size) { throw new Fault('副本磁盘容量不足'); }
+            if ($actual<$size) { throw Fault::localized('message.the_disk_in_the_restored_copy_is'); }
             $inventory['restore-'.$new.'-'.$slot]['size_gib']=$actual;
         }
         $this->mutate(['disks'=>Util::json($inventory)]);
@@ -1514,10 +1531,10 @@ final class Job
         elseif (!empty($manifest['password'])) { $settings+=['ciuser'=>'root','cipassword'=>decrypt($manifest['password'])]; }
         $this->op('restore-config','PUT',$replacement['path'].'/config',$settings+Pve::updateNetwork($config,$network,$this->instance['kind'])+['digest'=>$config['digest']]);
         $live=$this->pve->request('GET',$replacement['path'].'/config',['current'=>1]);
-        if (!Pve::networkApplied($live,$network)) { throw new Fault('副本网络配置尚未生效'); }
+        if (!Pve::networkApplied($live,$network)) { throw Fault::localized('message.the_restored_copys_network_configuration_has_not'); }
         if (!$lxc) { $this->op('restore-cloudinit','PUT',$replacement['path'].'/cloudinit'); }
 
-        $this->stage('切换实例',4,$temporary ? 6 : 5);
+        $this->stage('message.switch_the_instance',4,$temporary ? 6 : 5);
         if ($temporary) {
             $this->checkPasswordResetAccount();
             $this->checkPasswordResetSource();
@@ -1539,12 +1556,12 @@ final class Job
         } catch (\Throwable $e) {
             if ($temporary) { throw $e; }
             $this->ctx['restore_error']=$e->getMessage(); $this->save();
-            throw new Pending('正在恢复原实例');
+            throw new Pending(Lang::text('message.restoring_the_original_instance'));
         }
         if ($temporary) {
             $expected=$this->ctx['restore_running'] ? 'running' : 'stopped';
             if (($this->pve->request('GET',$replacement['path'].'/status/current')['status'] ?? '')!==$expected) {
-                throw new Fault('副本电源状态未通过核验');
+                throw Fault::localized('message.could_not_verify_the_copys_power_state');
             }
             $this->checkPasswordResetAccount();
             $this->checkPasswordResetSource();
@@ -1566,7 +1583,7 @@ final class Job
             $this->ctx['restore_bound']=true; $this->save();
         });
         if ($temporary) { return; }
-        $this->stage('清理原实例',5,5);
+        $this->stage('message.clean_up_the_original_instance',5,5);
         $this->finishReplacement($vmid,$spec);
     }
 
@@ -1576,7 +1593,7 @@ final class Job
         $config=$replacement['config'];
         $slots=Disks::slots($config,$this->instance['kind']);
         if (array_diff_key($slots,$disks) || array_diff_key($disks,$slots)) {
-            throw new IdentityMismatch('副本磁盘清单与备份不匹配',409);
+            throw IdentityMismatch::localized('message.the_restored_copys_disk_inventory_does_not',409);
         }
         $inventory=Util::unpack($this->instance['disks']);
         $seen=[];
@@ -1584,17 +1601,17 @@ final class Job
             $volume=Disks::volume($slots[$slot]);
             if (!str_starts_with($volume,$disk['storage'].':') ||
                 ($this->instance['kind']==='qemu' && $disk['id'] && !str_contains($slots[$slot],',serial='.$disk['serial']))) {
-                throw new IdentityMismatch('副本磁盘身份不匹配',409);
+                throw IdentityMismatch::localized('message.the_restored_disk_identity_does_not_match',409);
             }
             $key='restore-'.$new.'-'.$slot;
             if (isset($inventory[$key])) {
-                if ($inventory[$key]['volume']!==$volume) { throw new IdentityMismatch('副本磁盘已变更',409); }
+                if ($inventory[$key]['volume']!==$volume) { throw IdentityMismatch::localized('message.the_restored_copys_disk_changed',409); }
             } else {
                 $storage=$disk['storage'];
                 $seen[$storage] ??= array_column($this->pve->request('GET',Backups::path($this->pve,$storage),[
                     'vmid'=>$new,'content'=>$this->instance['kind']==='lxc' ? 'rootdir' : 'images',
                 ]),'volid');
-                if (!in_array($volume,$seen[$storage],true)) { throw new IdentityMismatch('副本磁盘不属于新容器',409); }
+                if (!in_array($volume,$seen[$storage],true)) { throw IdentityMismatch::localized('message.a_disk_in_the_restored_copy_does',409); }
             }
             $inventory[$key]=array_replace($disk,['volume'=>$volume,'vmid'=>$new,'size_gib'=>Pve::sizeGib($slots[$slot])]);
         }
@@ -1617,7 +1634,7 @@ final class Job
             $this->resizeDisk($path,'upgrade-disk',$slot,$config,$target['disk_gib']);
         }
         foreach ($dataGrowth as $disk) {
-            $key='data-'.$disk['id']; $record=$inventory[$key] ?? throw new Fault('数据盘记录不存在');
+            $key='data-'.$disk['id']; $record=$inventory[$key] ?? throw Fault::localized('message.data_disk_record_not_found');
             $this->resizeDisk($path,'grow-'.$key,$record['slot'],$config,$disk['size_gib']);
         }
         $config=$this->pve->request('GET',$path.'/config');
@@ -1643,17 +1660,17 @@ final class Job
         $effect=Purchases::resource($this->instance,$invoice);
         $service=(int)$this->instance['service_id'];
         if (empty($this->ctx['addon_config'])) {
-            if (Jobs::unfinishedNetworkEdit($service)) { throw new Fault('请先完成实例的网络配置'); }
-            $this->stage('校验附加服务',1,3);
+            if (Jobs::unfinishedNetworkEdit($service)) { throw Fault::localized('message.complete_the_instances_network_configuration_first'); }
+            $this->stage('message.verify_the_add_on',1,3);
             $old=Ipam::assigned($this->instance);
             $target=$spec;
             $addresses=$old;
             $kind=$effect['kind'];
             if (Addons::family($kind)) {
                 $held=Ipam::addonHolds((int)$this->instance['server_id'],$invoice)->orderBy('id')->pluck('address')->all();
-                if ($held!==$effect['addresses']) { throw new Fault('附加 IP 预留记录已变更'); }
+                if ($held!==$effect['addresses']) { throw Fault::localized('message.the_extra_ip_reservations_changed'); }
                 $addresses=array_merge($addresses,$held);
-                $owned=$this->pve->owned($this->instance) ?: throw new Fault('实例不存在');
+                $owned=$this->pve->owned($this->instance) ?: throw Fault::localized('message.instance_not_found');
                 $this->ctx['addon_restart']=($this->pve->request('GET',$owned['path'].'/status/current')['status'] ?? '')==='running';
             } else {
                 $target[$kind]+=$effect['quantity'];
@@ -1682,26 +1699,26 @@ final class Job
         $service=(int)$this->instance['service_id'];
         $old=Ipam::assigned($this->instance); sort($old,SORT_STRING);
         if ($payload['revision']!==InstanceConfig::revision($this->instance,$old)) {
-            throw new Fault('配置已更新，请重新打开表单',409);
+            throw Fault::localized('message.the_configuration_changed_reopen_the_form',409);
         }
-        $owned=$this->pve->owned($this->instance) ?: throw new Fault('实例不存在');
+        $owned=$this->pve->owned($this->instance) ?: throw Fault::localized('message.instance_not_found');
         $path=$owned['path'];
         $kvm=$this->instance['kind']==='qemu';
-        $this->stage('检查实例配置',1,3);
+        $this->stage('message.check_the_instance_configuration',1,3);
         $networkChange=$addresses!==$old || ($target['network'] ?? [])!==($spec['network'] ?? []) || Jobs::unfinishedNetworkEdit($service);
         $running=($this->pve->request('GET',$path.'/status/current')['status'] ?? '')==='running';
-        if ($networkChange && $running) { throw new Fault('修改 IP 或网卡配置前请先关闭 VPS'); }
+        if ($networkChange && $running) { throw Fault::localized('message.shut_down_the_vps_before_changing_ip'); }
         if ($kvm) {
             $original=array_column($spec['data_disks'] ?? [],'size_gib','id');
             $grow=array_filter($target['data_disks'] ?? [],fn($disk)=>$disk['size_gib']>$original[$disk['id']]);
             if ($grow) {
-                if (!$running) { throw new Fault('扩容 KVM 数据盘前请先启动实例'); }
+                if (!$running) { throw Fault::localized('message.start_the_instance_before_expanding_a_kvm'); }
                 $this->pve->request('POST',$path.'/agent/ping');
             }
         }
-        $this->stage('应用实例配置',2,3);
+        $this->stage('message.apply_the_instance_configuration',2,3);
         $this->growDisks($path,$spec,$target);
-        $config=($this->pve->owned($this->instance) ?: throw new Fault('实例不存在'))['config'];
+        $config=($this->pve->owned($this->instance) ?: throw Fault::localized('message.instance_not_found'))['config'];
         $hardware=['cores'=>$target['cores'],'memory'=>$target['memory_mib'],'cpulimit'=>$target['cpu_limit']];
         if (!$kvm) { $hardware['swap']=$target['swap_mib']; }
         $data=array_filter($hardware,fn($value,$key)=>!isset($config[$key]) || $config[$key]!=$value,ARRAY_FILTER_USE_BOTH);
@@ -1724,7 +1741,7 @@ final class Job
         }
         if ($networkChange) {
             $actual=$this->pve->request('GET',$path.'/config',['current'=>1]);
-            if (!Pve::networkApplied($actual,$network)) { throw new Fault('PVE 网络配置尚未生效'); }
+            if (!Pve::networkApplied($actual,$network)) { throw Fault::localized('message.the_pve_network_configuration_has_not_taken'); }
             if ($kvm) { $this->op('cloudinit','PUT',$path.'/cloudinit'); }
             $target['ip_pool_ids']=array_values(array_unique(array_map('intval',array_column($ips,'pool_id'))));
             sort($target['ip_pool_ids'],SORT_NUMERIC);
@@ -1732,7 +1749,7 @@ final class Job
                 $target['ipv'.$family.'_count']=count(array_filter($ips,fn($ip)=>(int)$ip['family']===$family));
             }
         }
-        $this->stage('同步服务规格',3,3);
+        $this->stage('message.sync_the_service_specifications',3,3);
         DB::connection()->transaction(function() use($service,$ips,$target,$networkChange,$spec,$invoice) {
             if ($invoice) { Purchases::resource($this->instance,$invoice,true); }
             if ($networkChange) {
@@ -1760,10 +1777,10 @@ final class Job
         $service=(int)$this->instance['service_id'];
         $row=Traffic::sample($this->instance,$this->pve);
         $target=Traffic::target($spec,$row);
-        $owned=$this->pve->owned($this->instance) ?: throw new Fault('实例不存在');
+        $owned=$this->pve->owned($this->instance) ?: throw Fault::localized('message.instance_not_found');
         $this->settleQuotaPower($owned['path'],'quota-resume','start');
         $this->settleQuotaPower($owned['path'],'quota-resume-cancelled','stop');
-        $this->stage($target==='normal' ? '恢复月流量额度与网络限制' : ($target==='suspended' ? '流量超额，暂停实例' : '流量超额，调整网络限速'),$stage,$total);
+        $this->stage($target==='normal' ? 'message.restore_the_monthly_quota_and_network_limits' : ($target==='suspended' ? 'message.traffic_quota_exceeded_suspend_the_instance' : 'message.traffic_quota_exceeded_throttle_the_network'),$stage,$total);
         if ($target==='suspended') {
             $native=DB::table('tblhosting')->where('id',$service)->first();
             if ($native->domainstatus==='Active' || $native->suspendreason===Traffic::REASON) {
@@ -1803,8 +1820,8 @@ final class Job
             if (($this->pve->request('GET',$path.'/status/current')['status'] ?? '')!=='running') {
                 $this->ctx['quota_running_deadline'] ??= time()+15;
                 $this->save();
-                if (time()<$this->ctx['quota_running_deadline']) { throw new Pending('等待开机状态同步'); }
-                throw new Fault('PVE 开机任务已结束，实例未启动');
+                if (time()<$this->ctx['quota_running_deadline']) { throw new Pending(Lang::text('message.waiting_for_the_startup_state_to_sync')); }
+                throw Fault::localized('message.the_pve_startup_task_ended_but_the');
             }
         }
         $started=!empty($this->ctx['done']['quota-resume']);
@@ -1817,7 +1834,7 @@ final class Job
                 Util::moduleApi('UpdateClientProduct',['serviceid'=>$service,'suspendreason'=>'']);
                 return true;
             }
-            if (!$started) { throw new Fault('付款状态已变更，请重试流量恢复'); }
+            if (!$started) { throw Fault::localized('message.the_payment_status_changed_retry_restoring_the'); }
             Util::moduleApi('UpdateClientProduct',['serviceid'=>$service,'status'=>'Active','suspendreason'=>'']);
             $this->mutate(['lifecycle'=>'active']);
             return false;
@@ -1837,7 +1854,7 @@ final class Job
             if ($upid) {
                 $this->ctx['ops'][$key]=['upid'=>$upid,'node'=>$node];
             } else {
-                if (time()<$since+60) { throw new Pending('等待 PVE 记录电源任务'); }
+                if (time()<$since+60) { throw new Pending(Lang::text('message.waiting_for_pve_to_record_the_power')); }
                 $expected=$action==='start' ? 'running' : 'stopped';
                 if (($this->pve->request('GET',$path.'/status/current')['status'] ?? '')===$expected) {
                     $this->ctx['done'][$key]=true;

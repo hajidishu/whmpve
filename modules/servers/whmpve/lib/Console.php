@@ -36,20 +36,20 @@ final class Console
         foreach (self::storages($create) as [$path,$scope]) {
             if ($token===null || @is_file(self::path($path,$token))) { return [$path,$scope]; }
         }
-        if ($token!==null) { throw new Fault('控制台连接已失效',403); }
-        throw new Fault('无法创建或打开私有控制台目录');
+        if ($token!==null) { throw Fault::localized('message.the_console_connection_has_expired',403); }
+        throw Fault::localized('message.could_not_open_or_create_the_private');
     }
 
     private static function file(string $path,string $mode='r+b')
     {
-        if (is_link($path)) { throw new Fault('控制台连接已失效',403); }
+        if (is_link($path)) { throw Fault::localized('message.the_console_connection_has_expired',403); }
         $old = umask(0077);
         try { $file = @fopen($path,$mode); } finally { umask($old); }
-        if (!$file) { throw new Fault('控制台连接已失效',403); }
+        if (!$file) { throw Fault::localized('message.the_console_connection_has_expired',403); }
         $stat = fstat($file); clearstatcache(true,$path); $entry = @lstat($path);
         if (!$entry || ($stat['mode']&0170000)!==0100000 || ($stat['mode']&0077)
             || $stat['nlink']!==1 || $entry['ino']!==$stat['ino'] || $entry['dev']!==$stat['dev']) {
-            fclose($file); throw new Fault('控制台连接已失效',403);
+            fclose($file); throw Fault::localized('message.the_console_connection_has_expired',403);
         }
         return $file;
     }
@@ -58,45 +58,45 @@ final class Console
     {
         clearstatcache(true,$path); $entry=@lstat($path); $stat=fstat($file);
         if (!$entry || $entry['ino']!==$stat['ino'] || $entry['dev']!==$stat['dev'] || $stat['nlink']!==1) {
-            throw new Fault('控制台连接已失效',403);
+            throw Fault::localized('message.the_console_connection_has_expired',403);
         }
     }
 
     private static function read($file): array
     {
         rewind($file); $raw = stream_get_contents($file,32769);
-        if (strlen($raw)>32768) { throw new Fault('控制台连接已失效',403); }
+        if (strlen($raw)>32768) { throw Fault::localized('message.the_console_connection_has_expired',403); }
         try { $record = json_decode($raw,true,32,JSON_THROW_ON_ERROR); }
-        catch (\JsonException) { throw new Fault('控制台连接已失效',403); }
-        if (!is_array($record)) { throw new Fault('控制台连接已失效',403); }
+        catch (\JsonException) { throw Fault::localized('message.the_console_connection_has_expired',403); }
+        if (!is_array($record)) { throw Fault::localized('message.the_console_connection_has_expired',403); }
         return $record;
     }
 
     private static function write($file,array $record): void
     {
         $raw = Util::json($record); rewind($file);
-        if (!ftruncate($file,0) || fwrite($file,$raw)!==strlen($raw) || !fflush($file)) { throw new Fault('无法保存控制台授权'); }
+        if (!ftruncate($file,0) || fwrite($file,$raw)!==strlen($raw) || !fflush($file)) { throw Fault::localized('message.could_not_save_the_console_authorization'); }
     }
 
     private static function lock($file,int $operation=LOCK_EX): void
     {
-        if (!flock($file,$operation)) { throw new Fault('控制台连接暂时不可用',503); }
+        if (!flock($file,$operation)) { throw Fault::localized('message.the_console_connection_is_temporarily_unavailable',503); }
     }
 
     private static function path(string $directory,string $token): string
     {
-        if (!preg_match('/^[a-f0-9]{64}$/D',$token)) { throw new Fault('控制台连接已失效',403); }
+        if (!preg_match('/^[a-f0-9]{64}$/D',$token)) { throw Fault::localized('message.the_console_connection_has_expired',403); }
         return $directory.'/'.$token.'.json';
     }
 
     private static function active(int $service,array $identity): array
     {
-        if (!Util::enabled()) { throw new Fault('管理插件已停用',403); }
+        if (!Util::enabled()) { throw Fault::localized('message.the_whmpve_add_on_module_is_disabled',403); }
         $native = Http::own($service,$identity['id']);
         $instance = Jobs::instance($service);
         if ($native['domainstatus']!=='Active' || $instance['lifecycle']!=='active' || !$instance['vmid']
             || DB::table('tblclients')->where('id',$identity['id'])->value('status')==='Closed') {
-            throw new Fault('当前服务不能使用控制台',403);
+            throw Fault::localized('message.the_console_is_unavailable_for_this_service',403);
         }
         return $instance;
     }
@@ -109,7 +109,7 @@ final class Console
             'created_at'=>Util::now(),'updated_at'=>Util::now()]);
         $updated = DB::table('mod_whmpve_cache')->where('cache_key',$key)->whereRaw('CAST(value AS UNSIGNED) < ?',[$limit])
             ->update(['value'=>DB::raw('CAST(value AS UNSIGNED) + 1'),'updated_at'=>Util::now()]);
-        if (!$updated) { throw new Fault('控制台申请过于频繁，请稍后重试',429); }
+        if (!$updated) { throw Fault::localized('message.too_many_console_requests_try_again_shortly',429); }
     }
 
     private static function expired(array $record): bool
@@ -151,7 +151,7 @@ final class Console
     {
         $instance = self::active($service,$identity);
         $mode ??= $instance['kind']==='qemu' ? 'novnc' : 'xterm';
-        if (!in_array($mode,['novnc','xterm'],true)) { throw new Fault('请选择有效的控制台类型'); }
+        if (!in_array($mode,['novnc','xterm'],true)) { throw Fault::localized('message.select_a_valid_console_type'); }
         [$directory,$site] = self::storage(true);
         self::rate('service:'.$service,5);
         self::rate('subject:'.$identity['subject'],20);
@@ -170,7 +170,7 @@ final class Console
                 if (($existing['subject'] ?? '')===$identity['subject']) { ++$user; }
                 if (($existing['service_id'] ?? 0)===$service) { ++$guest; }
             }
-            if ($total>=512 || $user>=4 || $guest>=2) { throw new Fault('控制台连接数量已达上限，请关闭不用的连接',429); }
+            if ($total>=512 || $user>=4 || $guest>=2) { throw Fault::localized('message.console_connection_limit_reached_close_any_unused',429); }
             $file = self::file($path,'x+b');
             try { self::lock($file); self::write($file,$record); } finally { fclose($file); }
         } finally { flock($lock,LOCK_UN); fclose($lock); }
@@ -178,14 +178,14 @@ final class Console
             $ticket = (new Pve((int)$instance['server_id']))->consoleTicket($instance,$mode);
             $fresh=$scope==='admin' ? Http::adminConsoleIdentity($service,(int)$instance['server_id']) : Http::client(true);
             if ($fresh['id']!==$identity['id'] || $fresh['subject']!==$identity['subject'] || $fresh['session']!==$identity['session']) {
-                throw new Fault('登录会话已变更，请重新连接',403);
+                throw Fault::localized('message.your_login_session_changed_reconnect_to_the',403);
             }
             $current = self::active($service,$fresh);
-            if ($current['uuid']!==$record['uuid'] || (int)$current['vmid']!==$record['vmid']) { throw new Fault('实例已变更，请重新连接',403); }
+            if ($current['uuid']!==$record['uuid'] || (int)$current['vmid']!==$record['vmid']) { throw Fault::localized('message.the_instance_changed_reconnect_to_the_console',403); }
             $file = self::file($path);
             try {
                 self::lock($file); self::linked($file,$path); $record = self::read($file);
-                if (self::expired($record) || $record['state']!=='issuing') { throw new Fault('控制台申请已超时',403); }
+                if (self::expired($record) || $record['state']!=='issuing') { throw Fault::localized('message.the_console_request_timed_out',403); }
                 $record += $ticket;
                 $record['state']='issued'; $record['connect_before']=time()+60; $record['lease_until']=time()+self::LEASE_SECONDS;
                 self::write($file,$record);
@@ -208,12 +208,12 @@ final class Console
             if (($record['version'] ?? 0)!==2 || ($record['service_id'] ?? 0)!==$service || ($record['client_id'] ?? 0)!==$identity['id']
                 || ($record['scope'] ?? 'client')!==($identity['scope'] ?? 'client')
                 || ($record['subject'] ?? '')!==$identity['subject'] || !hash_equals((string)($record['session'] ?? ''),$identity['session'])) {
-                throw new Fault('控制台连接不属于当前会话',403);
+                throw Fault::localized('message.this_console_connection_does_not_belong_to',403);
             }
             if ($close) { @unlink($path); return ['closed'=>true]; }
             if (self::expired($record) || !in_array($record['state'],['issued','connected'],true)
                 || $record['uuid']!==$instance['uuid'] || $record['vmid']!==(int)$instance['vmid'] || $record['server_id']!==(int)$instance['server_id']) {
-                @unlink($path); throw new Fault('控制台授权已失效，请重新连接',403);
+                @unlink($path); throw Fault::localized('message.console_authorization_expired_reconnect_to_the_console',403);
             }
             $record['lease_until']=min(time()+self::LEASE_SECONDS,$record['expires']); self::write($file,$record);
             return ['lease_until'=>$record['lease_until']];

@@ -21,7 +21,7 @@ final class Backups
 
     public static function record(array $instance,int $id): array
     {
-        return (array)(self::records($instance)->where('id',$id)->first() ?? throw new Fault('备份不存在',404));
+        return (array)(self::records($instance)->where('id',$id)->first() ?? throw Fault::localized('message.backup_not_found',404));
     }
 
     public static function summary(array $instance): array
@@ -35,17 +35,17 @@ final class Backups
 
     public static function setAutomatic(int $service,int $client,bool $enabled): array
     {
-        if (!Util::enabled()) { throw new Fault('管理插件尚未激活或已停用',503); }
+        if (!Util::enabled()) { throw Fault::localized('message.activate_the_whmpve_add_on_module_first',503); }
         return DB::connection()->transaction(function() use($service,$client,$enabled) {
             $instances=DB::table('mod_whmpve_instances')->where('service_id',$service);
             $instance=$instances->lockForUpdate()->first();
             $native=DB::table('tblhosting')->where('id',$service)->where('userid',$client)->lockForUpdate()->first(['domainstatus','server']);
-            if (!$native || !$instance) { throw new Fault('服务不存在',404); }
+            if (!$native || !$instance) { throw Fault::localized('message.service_not_found',404); }
             if (empty($instance->vmid) || !in_array($native->domainstatus,['Active','Suspended'],true)
-                || !in_array($instance->lifecycle,['active','suspended'],true)) { throw new Fault('当前服务状态不允许设置自动备份',403); }
+                || !in_array($instance->lifecycle,['active','suspended'],true)) { throw Fault::localized('message.automatic_backup_settings_cannot_be_changed_for',403); }
             Catalog::assertServerBinding((array)$instance,(int)$native->server);
-            if (!property_exists($instance,'auto_backup_since')) { throw new Fault('请先升级插件数据库',503); }
-            if ($enabled && !self::policy((array)$instance)['automatic_allowed']) { throw new Fault('此套餐未开放自动备份',403); }
+            if (!property_exists($instance,'auto_backup_since')) { throw Fault::localized('message.upgrade_the_module_database_first',503); }
+            if ($enabled && !self::policy((array)$instance)['automatic_allowed']) { throw Fault::localized('message.this_plan_does_not_allow_automatic_backups',403); }
             if ((bool)$instance->auto_backup_since!==$enabled) {
                 $instances->update(['auto_backup_since'=>$enabled ? Util::now() : null]);
             }
@@ -69,7 +69,7 @@ final class Backups
         $storage=Disks::storage(explode(':',$volume,2)[0]);
         $path=self::path($pve,$storage);
         $rows=$pve->request('GET',$path,['content'=>'backup','vmid'=>$record['source_vmid']]);
-        if (!is_array($rows) || !array_is_list($rows)) { throw new Fault('PVE 备份列表无效',502); }
+        if (!is_array($rows) || !array_is_list($rows)) { throw Fault::localized('message.pve_returned_an_invalid_backup_list',502); }
         foreach ($rows as $row) {
             if (($row['volid'] ?? '')===$volume) { return self::verifyArchive($instance,$record,$row); }
         }
@@ -77,25 +77,25 @@ final class Backups
             $archive=$pve->request('GET',$path.'/'.rawurlencode($volume));
         } catch (PveHttpFault $e) {
             if ($e->status===403) {
-                throw new Fault('无权读取 PVE 备份，请检查源 VMID '.$record['source_vmid'].' 的 VM.Backup 和备份存储权限。',403);
+                throw Fault::localized('message.backup_read_permission',403,['vmid'=>$record['source_vmid']]);
             }
             // File storage reports a failed stat as "no format" after checking volume permissions.
             if ($e->status!==500 || $e->detail!=="volume_size_info on '$volume' failed - no format") { throw $e; }
             $status=$pve->request('GET',substr($path,0,-strlen('/content')).'/status');
             if (empty($status['enabled']) || empty($status['active']) || !in_array('backup',explode(',',$status['content'] ?? ''),true)) {
-                throw new Fault('PVE 备份存储不可用',502);
+                throw Fault::localized('message.pve_backup_storage_is_unavailable',502);
             }
             if (!preg_match('#:backup/vzdump-(lxc|qemu)-[0-9]+-#D',$volume)) { throw $e; }
             return null;
         }
-        if (!is_array($archive)) { throw new Fault('PVE 归档查询结果无效',502); }
+        if (!is_array($archive)) { throw Fault::localized('message.pve_returned_invalid_archive_information',502); }
         return self::verifyArchive($instance,$record,$archive+['volid'=>$volume]);
     }
 
     private static function verifyArchive(array $instance,array $record,array $archive): array
     {
         if (($archive['volid'] ?? '')!==$record['volume'] || ($archive['notes'] ?? '')!==self::note($instance,(int)$record['task_id'])) {
-            throw new IdentityMismatch('PVE 备份身份不匹配',409);
+            throw IdentityMismatch::localized('message.the_pve_backup_identity_does_not_match',409);
         }
         return $archive;
     }
@@ -104,11 +104,11 @@ final class Backups
     {
         $archive=self::archive($pve,$instance,$record);
         if (!$archive) { return; }
-        if (!empty($archive['protected'])) { throw new Fault('PVE 旧备份已设为保护，无法自动轮换',409); }
+        if (!empty($archive['protected'])) { throw Fault::localized('message.the_old_pve_backup_is_protected_and',409); }
         $storage=Disks::storage(explode(':',$record['volume'],2)[0]);
         if (!array_key_exists('VM.Backup',$pve->permissions('/vms/'.(int)$record['source_vmid']))
             || !array_key_exists('Datastore.AllocateSpace',$pve->permissions('/storage/'.$storage))) {
-            throw new Fault('缺少删除源 VMID '.$record['source_vmid'].' 备份的权限，已跳过本次轮换。',403);
+            throw Fault::localized('message.backup_delete_permission',403,['vmid'=>$record['source_vmid']]);
         }
     }
 
@@ -120,8 +120,8 @@ final class Backups
                 && DB::table('mod_whmpve_instances')->where('id',$instance['id'])->where('auto_backup_since','<=',$cutoff)->exists()
                 && self::records($instance)->where('automatic',0)->count()<$policy['limit'];
         }
-        if (!$policy['limit']) { throw new Fault('此套餐未启用备份'); }
-        if (self::records($instance)->count()>=$policy['limit']) { throw new Fault('备份数量已达上限，请先删除一份备份',409); }
+        if (!$policy['limit']) { throw Fault::localized('message.backups_are_disabled_for_this_plan'); }
+        if (self::records($instance)->count()>=$policy['limit']) { throw Fault::localized('message.backup_limit_reached_delete_a_backup_first',409); }
         return true;
     }
 

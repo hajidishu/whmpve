@@ -3,17 +3,19 @@ declare(strict_types=1);
 // Reject malformed/oversized JSON before WHMCS parses the request during init.
 // Authentication and all resource operations remain in Http::dispatch().
 if (($_SERVER['REQUEST_METHOD'] ?? '')==='POST') {
-    $reject=static function(int $code,string $message): never {
+    $reject=static function(int $code,string $key): never {
+        require_once __DIR__.'/lib/Lang.php';
         http_response_code($code);header('Content-Type: application/json; charset=utf-8');header('Cache-Control: no-store');
+        $message=\Whmpve\Lang::text($key,[],$_SERVER['HTTP_X_WHMPVE_LANGUAGE'] ?? '');
         echo json_encode(['ok'=>false,'error'=>$message],JSON_UNESCAPED_UNICODE);exit;
     };
-    if ((int)($_SERVER['CONTENT_LENGTH'] ?? 0)>65536) { $reject(413,'请求过大'); }
+    if ((int)($_SERVER['CONTENT_LENGTH'] ?? 0)>65536) { $reject(413,'message.request_too_large'); }
     $raw=file_get_contents('php://input',false,null,0,65537);
-    if (strlen($raw)>65536) { $reject(413,'请求过大'); }
+    if (strlen($raw)>65536) { $reject(413,'message.request_too_large'); }
     if (str_starts_with($_SERVER['CONTENT_TYPE'] ?? '','application/json')) {
         try { $decoded=json_decode($raw,true,32,JSON_THROW_ON_ERROR); }
-        catch (JsonException) { $reject(400,'JSON 请求格式无效'); }
-        if (!is_array($decoded)) { $reject(400,'请求数据无效'); }
+        catch (JsonException) { $reject(400,'message.invalid_json_request'); }
+        if (!is_array($decoded)) { $reject(400,'message.invalid_request_data'); }
         $GLOBALS['whmpve_request_payload']=$decoded;
     }
 }

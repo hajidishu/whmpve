@@ -61,7 +61,7 @@ final class Delivery
             if ($welcome['state']==='sending') {
                 $welcome['state']='failed';
                 if (self::update($task,$context)) {
-                    Util::log('交付邮件发送结果待确认，请检查 WHMCS 邮件日志。',$server,$service,'warning');
+                    Util::log(Lang::text('message.delivery_email_status_is_uncertain_check_the'),$server,$service,'warning');
                 }
                 continue;
             }
@@ -78,7 +78,7 @@ final class Delivery
                 $welcome['state']='sent';
             } catch (\Throwable $e) {
                 $welcome['state']=$welcome['attempts']<3 ? 'queued' : 'failed';
-                Util::log('交付邮件发送失败，请检查 WHMCS 邮件设置与日志。',$server,$service,'warning');
+                Util::log(Lang::text('message.could_not_send_the_delivery_email_check'),$server,$service,'warning');
             }
             self::update($task,$context);
         }

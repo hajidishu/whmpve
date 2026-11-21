@@ -10,6 +10,7 @@ WHMPVE是一个开源的whmcs对接pve自动化售卖lxc容器和kvm虚拟机的
 
 - [插件完整部署教程（含配图）](docs/install.md)
 - [LXC 和 KVM 镜像下载](https://github.com/hajidishu/whmpve/tree/main/templates)
+- [界面语言与新增翻译](docs/languages.md)
 
 注：某些功能在本模块管理页面和whmcs原生页面都有提供（例如服务器对接），但是请务必在插件页面使用这些功能，因为whmcs原生提供的这些功能并不完整，我们并不想把功能拆散到一大堆页面中
 

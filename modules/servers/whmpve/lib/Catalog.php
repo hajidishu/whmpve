@@ -13,8 +13,8 @@ final class Catalog
         $default = (int)($input['default_image_id'] ?? 0);
         $image = $default ? Util::scoped('images',$default,$server) : null;
         $kind = $input['kind'] ?? '';
-        if (!in_array($kind,['lxc','qemu'],true)) { throw new Fault('请选择虚拟化类型'); }
-        if ($image && $image['kind']!==$kind) { throw new Fault('默认镜像类型与 Plan 类型不一致'); }
+        if (!in_array($kind,['lxc','qemu'],true)) { throw Fault::localized('message.select_a_virtualization_type'); }
+        if ($image && $image['kind']!==$kind) { throw Fault::localized('message.the_default_image_does_not_match_the'); }
         $spec = ['kind'=>$kind]+Disks::spec($input,$server);
         if ($kind==='lxc') { $spec['nesting']=(bool)($input['nesting'] ?? true); }
         foreach (['cores'=>[1,128,1],'memory_mib'=>[32,1048576,64],'swap_mib'=>[0,1048576,0],
@@ -27,25 +27,25 @@ final class Catalog
         $spec['auto_backup'] = !empty($input['auto_backup']);
         $spec['cpu_limit'] = (float)($input['cpu_limit'] ?? $spec['cores']);
         if ($spec['cpu_limit'] < .1 || $spec['cpu_limit'] > $spec['cores']) {
-            throw new Fault('CPU 上限不能超过核数');
+            throw Fault::localized('message.the_cpu_limit_cannot_exceed_the_number');
         }
         $spec['default_image_id'] = $default;
-        if ($spec['kind']==='qemu' && $spec['swap_mib']) { throw new Fault('KVM 的 Swap 请在镜像系统内配置'); }
+        if ($spec['kind']==='qemu' && $spec['swap_mib']) { throw Fault::localized('message.configure_swap_inside_the_guest_os_for'); }
         $spec['image_group_ids'] = self::references($input['image_group_ids'] ?? [],'image_groups',$server);
         $spec['ip_pool_ids'] = self::references($input['ip_pool_ids'] ?? [],'ip_pools',$server);
         foreach ([4,6] as $family) {
             if ($spec['ipv'.$family.'_count'] && !DB::table('mod_whmpve_ip_pools')->where('server_id',$server)
-                ->whereIn('id',$spec['ip_pool_ids'])->where('family',$family)->exists()) { throw new Fault('请选择 IPv'.$family.' 地址池'); }
+                ->whereIn('id',$spec['ip_pool_ids'])->where('family',$family)->exists()) { throw Fault::localized('message.select_ip_pool',422,['family'=>$family]); }
             if ($spec['ipv'.$family.'_count'] && DB::table('mod_whmpve_ip_pools')->whereIn('id',$spec['ip_pool_ids'])
-                ->where('family',$family)->where('bridge','')->exists()) { throw new Fault('请先填写所选 IP 池的网桥'); }
+                ->where('family',$family)->where('bridge','')->exists()) { throw Fault::localized('message.set_a_bridge_for_the_selected_ip'); }
         }
-        if ($image && !self::imageAllowed($image,$spec)) { throw new Fault('默认镜像不属于所选镜像组，或配置低于镜像要求'); }
+        if ($image && !self::imageAllowed($image,$spec)) { throw Fault::localized('message.the_default_image_is_outside_the_selected'); }
         $spec['traffic_gb'] = Traffic::quota($input['traffic_gb'] ?? 0);
         $spec['traffic_action'] = $input['traffic_action'] ?? 'throttle';
-        if (!in_array($spec['traffic_action'],['throttle','suspend'],true)) { throw new Fault('请选择流量超额处理方式'); }
+        if (!in_array($spec['traffic_action'],['throttle','suspend'],true)) { throw Fault::localized('message.select_what_to_do_when_traffic_exceeds'); }
         $spec['allowed_options'] = [];
         foreach (($input['allowed_options'] ?? []) as $key=>$values) {
-            if (!in_array($key,self::RESOURCE_OPTIONS,true) || !is_array($values)) { throw new Fault('可选规格无效'); }
+            if (!in_array($key,self::RESOURCE_OPTIONS,true) || !is_array($values)) { throw Fault::localized('message.invalid_configurable_resources'); }
             $spec['allowed_options'][$key] = array_values(array_unique(array_map($key==='disk_gib' ? [Disks::class,'size'] : 'intval',$values)));
         }
         return $spec;
@@ -53,7 +53,7 @@ final class Catalog
 
     private static function references(mixed $ids,string $table,int $server): array
     {
-        if (!is_array($ids)) { throw new Fault('请选择有效的配置'); }
+        if (!is_array($ids)) { throw Fault::localized('message.select_a_valid_configuration'); }
         $ids = array_values(array_unique(array_map('intval',$ids)));
         foreach ($ids as $id) { Util::scoped($table,$id,$server); }
         return $ids;
@@ -87,7 +87,7 @@ final class Catalog
         $id = (int)($input['id'] ?? 0);
         if ($id) { Util::scoped('image_groups',$id,$server); }
         $name = Util::label((string)($input['name'] ?? ''));
-        if (DB::table('mod_whmpve_image_groups')->where('server_id',$server)->where('name',$name)->where('id','!=',$id)->exists()) { throw new Fault('镜像组名称已存在'); }
+        if (DB::table('mod_whmpve_image_groups')->where('server_id',$server)->where('name',$name)->where('id','!=',$id)->exists()) { throw Fault::localized('message.an_image_group_with_this_name_already'); }
         return self::save('image_groups',$id,['server_id'=>$server,'name'=>$name]);
     }
 
@@ -102,17 +102,17 @@ final class Catalog
             $previous=[];
             if ($id) {
                 $old = DB::table('mod_whmpve_plans')->where('id',$id)->where('server_id',$server)->lockForUpdate()->first()
-                    ?? throw new Fault('Plan 不存在',404);
+                    ?? throw Fault::localized('message.plan_not_found',404);
                 $previous=Util::unpack($old->spec);
             }
             $spec = self::spec($input+array_intersect_key($previous,['nesting'=>true]),$server);
             if ($id && $previous['kind']!==$spec['kind'] && in_array($id,self::usedPlans($server),true)) {
-                throw new Fault('该 Plan 已有订单，更换类型请新建 Plan');
+                throw Fault::localized('message.orders_already_exist_for_this_plan_create');
             }
             $name = Util::label((string)($input['name'] ?? ''));
             $duplicates = DB::table('mod_whmpve_plans')->where('server_id',$server)->where('name',$name);
             if ($id) { $duplicates->where('id','!=',$id); }
-            if ($duplicates->exists()) { throw new Fault('该服务器已存在同名 Plan'); }
+            if ($duplicates->exists()) { throw Fault::localized('message.a_plan_with_that_name_already_exists'); }
             if (($input['preserve_unlisted_options'] ?? false)===true) {
                 $spec['allowed_options']+=array_intersect_key($previous['allowed_options'] ?? [],
                     array_flip(['swap_mib','ipv4_count','ipv6_count']));
@@ -131,14 +131,14 @@ final class Catalog
 
     private static function connectionDisplay(mixed $input,array $previous): array
     {
-        if (!is_array($input)) { throw new Fault('连接信息格式无效'); }
+        if (!is_array($input)) { throw Fault::localized('message.invalid_connection_details_format'); }
         if (empty($input['private_address'])) { return ['private_address'=>false]+$previous; }
         $ip=$input['public_ip'] ?? '';
         $note=$input['port_note'] ?? '';
         if (!is_string($ip) || (trim($ip)!=='' && !filter_var(trim($ip),FILTER_VALIDATE_IP))) {
-            throw new Fault('请输入有效的公网入口 IP');
+            throw Fault::localized('message.enter_a_valid_public_ingress_ip');
         }
-        if (!is_string($note)) { throw new Fault('分配的端口请输入文字'); }
+        if (!is_string($note)) { throw Fault::localized('message.enter_the_assigned_ports_as_text'); }
         return ['private_address'=>true,'public_ip'=>trim($ip),'port_note'=>trim($note)];
     }
 
@@ -157,20 +157,20 @@ final class Catalog
         $id = (int)($input['id'] ?? 0);
         $old = $id ? Util::scoped('images',$id,$server) : null;
         $kind = $input['kind'] ?? 'lxc';
-        if (!in_array($kind,['lxc','qemu'],true)) { throw new Fault('镜像类型无效'); }
-        if ($old && $old['kind']!==$kind) { throw new Fault('更换类型请新建镜像'); }
+        if (!in_array($kind,['lxc','qemu'],true)) { throw Fault::localized('message.invalid_image_type'); }
+        if ($old && $old['kind']!==$kind) { throw Fault::localized('message.create_a_new_image_to_use_a'); }
         $group = empty($input['group_id']) ? null : (int)$input['group_id'];
         if ($group) { Util::scoped('image_groups',$group,$server); }
         $source = trim((string)($input['source'] ?? ''));
         $valid = $kind==='lxc'
             ? preg_match('/^[a-zA-Z0-9_.-]+:vztmpl\/[a-zA-Z0-9_.-]+\.tar\.(xz|gz|zst)$/',$source)
             : ctype_digit($source);
-        if (!$valid) { throw new Fault($kind==='lxc' ? '请填写模板卷名，例如 local:vztmpl/alpine.tar.xz' : '请填写 KVM 模板 VMID'); }
+        if (!$valid) { throw new Fault($kind==='lxc' ? Lang::text('message.enter_the_template_volume_for_example_local') : Lang::text('message.enter_the_kvm_template_vmid')); }
         $description=$input['description'] ?? ($old['description'] ?? '');
-        if (!is_string($description) || mb_strlen($description)>500) { throw new Fault('镜像描述最多 500 字'); }
+        if (!is_string($description) || mb_strlen($description)>500) { throw Fault::localized('message.an_image_description_may_contain_at_most'); }
         return self::save('images',$id,[
             'server_id'=>$server,'name'=>Util::label((string)($input['name'] ?? '')),'kind'=>$kind,'source'=>$source,'group_id'=>$group,
-            'min_memory'=>Util::integer($input['min_memory'] ?? 64,16,1048576,'最低内存'),
+            'min_memory'=>Util::integer($input['min_memory'] ?? 64,16,1048576,Lang::text('message.minimum_memory')),
             'min_disk'=>Disks::size($input['min_disk'] ?? 1),
             'description'=>trim($description),
         ]);
@@ -187,11 +187,11 @@ final class Catalog
     public static function delete(string $table,int $id,int $server): void
     {
         if ($table==='ip_pools') { Ipam::removePool($id,$server); return; }
-        if (!in_array($table,['plans','images','ips','image_groups'],true)) { throw new Fault('记录类型无效'); }
+        if (!in_array($table,['plans','images','ips','image_groups'],true)) { throw Fault::localized('message.invalid_record_type'); }
         Util::scoped($table,$id,$server);
         if ($table==='ips') {
             if (!DB::table('mod_whmpve_ips')->where('id',$id)->where('server_id',$server)->where('state','free')->delete()) {
-                throw new Fault('该 IP 已分配或已删除',409);
+                throw Fault::localized('message.this_ip_address_has_already_been_assigned',409);
             }
             return;
         }
@@ -200,7 +200,7 @@ final class Catalog
                 Ipam::lockServer($server);
                 if (DB::table('mod_whmpve_instances')->where('plan_id',$id)->exists()
                     || DB::table('tblproducts')->where('servertype','whmpve')->where('configoption2',$id)->exists()) {
-                    throw new Fault('Plan 已关联产品或实例，请先停用');
+                    throw Fault::localized('message.this_plan_is_linked_to_products_or');
                 }
                 DB::table('mod_whmpve_addons')->where('server_id',$server)->where('plan_id',$id)->delete();
                 DB::table('mod_whmpve_plans')->where('server_id',$server)->where('id',$id)->delete();
@@ -208,16 +208,16 @@ final class Catalog
             return;
         } elseif ($table==='images') {
             foreach (DB::table('mod_whmpve_plans')->where('server_id',$server)->get(['spec']) as $plan) {
-                if ($id===(int)Util::unpack($plan->spec)['default_image_id']) { throw new Fault('请先更换 Plan 的默认镜像'); }
+                if ($id===(int)Util::unpack($plan->spec)['default_image_id']) { throw Fault::localized('message.change_the_plans_default_image_first'); }
             }
-            if (DB::table('mod_whmpve_instances')->where('image_id',$id)->exists()) { throw new Fault('镜像已有实例记录，请先停用'); }
+            if (DB::table('mod_whmpve_instances')->where('image_id',$id)->exists()) { throw Fault::localized('message.this_image_is_linked_to_existing_instances'); }
             if (DB::table('mod_whmpve_backups')->where('server_id',$server)
                 ->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(manifest, '$.image_id')) = ?",[(string)$id])->exists()) {
-                throw new Fault('镜像仍被备份引用，请先停用');
+                throw Fault::localized('message.a_backup_still_references_this_image_disable');
             }
         } elseif ($table==='image_groups') {
             foreach (DB::table('mod_whmpve_plans')->where('server_id',$server)->get(['spec']) as $plan) {
-                if (in_array($id,Util::unpack($plan->spec)['image_group_ids'] ?? [],true)) { throw new Fault('请先从 Plan 移除此镜像组'); }
+                if (in_array($id,Util::unpack($plan->spec)['image_group_ids'] ?? [],true)) { throw Fault::localized('message.remove_this_image_group_from_the_plans'); }
             }
             DB::table('mod_whmpve_images')->where('server_id',$server)->where('group_id',$id)->update(['group_id'=>null]);
         }
@@ -228,9 +228,9 @@ final class Catalog
     {
         $server = (int)($params['configoption1'] ?? 0);
         $config = ServerConfig::get($server);
-        if (!$config['active']) { throw new Fault('所选服务器已停用'); }
+        if (!$config['active']) { throw Fault::localized('message.the_selected_server_is_disabled'); }
         $plan = Util::scoped('plans',(int)($params['configoption2'] ?? 0),$server);
-        if (!$plan['active']) { throw new Fault('所选 Plan 已停用'); }
+        if (!$plan['active']) { throw Fault::localized('message.the_selected_plan_is_disabled'); }
         $spec = Util::unpack($plan['spec']);
         $baseCores=(int)$spec['cores'];
         $baseLimit=(float)($spec['cpu_limit'] ?? $baseCores);
@@ -238,36 +238,36 @@ final class Catalog
             $key = explode('|',(string)$key)[0];
             $value = explode('|',(string)$value)[0];
             if (!in_array($key,self::RESOURCE_OPTIONS,true)) { continue; }
-            if (!isset($spec['allowed_options'][$key])) { throw new Fault('可选规格不属于所选 Plan'); }
+            if (!isset($spec['allowed_options'][$key])) { throw Fault::localized('message.the_configured_resources_are_outside_the_selected'); }
             if ($key==='disk_gib') {
                 $value=Disks::size($value);
                 $choices=array_map([Disks::class,'size'],$spec['allowed_options'][$key]);
             } else {
-                if (!ctype_digit((string)$value)) { throw new Fault('可选规格不属于所选 Plan'); }
+                if (!ctype_digit((string)$value)) { throw Fault::localized('message.the_configured_resources_are_outside_the_selected'); }
                 $value=(int)$value; $choices=$spec['allowed_options'][$key];
             }
-            if (!in_array($value,$choices,true)) { throw new Fault('可选规格不属于所选 Plan'); }
+            if (!in_array($value,$choices,true)) { throw Fault::localized('message.the_configured_resources_are_outside_the_selected'); }
             $spec[$key] = $value;
         }
         if ((int)$spec['cores']!==$baseCores) {
             $spec['cpu_limit']=$baseLimit===(float)$baseCores ? $spec['cores'] : min($baseLimit,$spec['cores']);
         }
         $spec = Disks::custom(self::spec($spec,$server),$params['customfields'] ?? []);
-        if (!$spec['default_image_id']) { throw new Fault('请先为 Plan 设置默认镜像'); }
+        if (!$spec['default_image_id']) { throw Fault::localized('message.set_a_default_image_for_the_plan'); }
         return ['server'=>$config,'plan'=>$plan,'spec'=>$spec];
     }
 
     public static function assertServerBinding(array $instance,int $nativeServer): void
     {
-        if ((int)$instance['server_id']!==$nativeServer) { throw new Fault('WHMCS 的服务器与实例绑定不一致',409); }
+        if ((int)$instance['server_id']!==$nativeServer) { throw Fault::localized('message.the_whmcs_server_does_not_match_the',409); }
     }
 
     public static function params(int $service): array
     {
         $s = DB::table('tblhosting')->where('id',$service)->first();
-        if (!$s) { throw new Fault('服务不存在',404); }
+        if (!$s) { throw Fault::localized('message.service_not_found',404); }
         $p = DB::table('tblproducts')->where('id',$s->packageid)->first();
-        if (!$p || $p->servertype!=='whmpve') { throw new Fault('服务不属于 WHMPVE',404); }
+        if (!$p || $p->servertype!=='whmpve') { throw Fault::localized('message.this_service_does_not_belong_to_whmpve',404); }
         $params = ['serviceid'=>$service,'userid'=>(int)$s->userid,'pid'=>(int)$s->packageid,'serverid'=>(int)$s->server,
             'domain'=>$s->domain,'username'=>$s->username,'password'=>$s->password ? decrypt($s->password) : '',
             'configoption1'=>$p->configoption1,'configoption2'=>$p->configoption2,'configoptions'=>[],'customfields'=>[]];
