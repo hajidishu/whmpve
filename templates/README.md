@@ -1,12 +1,16 @@
 # Alpine 3.24 和 Debian 13 精简模板
 
-六份镜像均预装 Cloud-Init 和 QEMU Guest Agent。各镜像的软件包版本见同目录的 `.packages.txt`。下载镜像和 [SHA256SUMS](https://github.com/hajidishu/whmpve/releases/download/templates-2026.11.20/SHA256SUMS) 后，在 PVE 节点可用 `sha256sum -c --ignore-missing SHA256SUMS` 校验本地已下载的镜像。
+六份镜像均预装 Cloud-Init、QEMU Guest Agent 和 OpenSSH。实例开通后，可以使用开通时设置的 root 密码登录 SSH。软件包版本见同目录的 `.packages.txt`。
+
+点击表格里的文件名，在 GitHub 文件页下载镜像。使用 Git 时，安装 Git LFS 后运行 `git lfs pull` 获取两份 QCOW2 镜像。GitHub 的「Download ZIP」默认只包含 QCOW2 指针。
+
+将镜像和 [SHA256SUMS](./SHA256SUMS) 下载到同一目录后，运行 `sha256sum -c --ignore-missing SHA256SUMS` 校验已下载的镜像。
 
 | 类型 | 架构 | Alpine 3.24 | Debian 13 |
 | --- | --- | --- | --- |
-| LXC | amd64（x86_64） | [alpine-3.24-cloudinit-qga_amd64.tar.xz](https://github.com/hajidishu/whmpve/releases/download/templates-2026.11.20/alpine-3.24-cloudinit-qga_amd64.tar.xz) | [debian-13-cloudinit-qga_amd64.tar.zst](https://github.com/hajidishu/whmpve/releases/download/templates-2026.11.20/debian-13-cloudinit-qga_amd64.tar.zst) |
-| LXC | ARM64 | [alpine-3.24-cloudinit-qga_arm64.tar.xz](https://github.com/hajidishu/whmpve/releases/download/templates-2026.11.20/alpine-3.24-cloudinit-qga_arm64.tar.xz) | [debian-13-cloudinit-qga_arm64.tar.zst](https://github.com/hajidishu/whmpve/releases/download/templates-2026.11.20/debian-13-cloudinit-qga_arm64.tar.zst) |
-| KVM | amd64（x86_64） | [alpine-3.24-cloudinit-qga_kvm-amd64.qcow2](https://github.com/hajidishu/whmpve/releases/download/templates-2026.11.20/alpine-3.24-cloudinit-qga_kvm-amd64.qcow2) | [debian-13-cloudinit-qga_kvm-amd64.qcow2](https://github.com/hajidishu/whmpve/releases/download/templates-2026.11.20/debian-13-cloudinit-qga_kvm-amd64.qcow2) |
+| LXC | amd64（x86_64） | [alpine-3.24-cloudinit-qga_amd64.tar.xz](./alpine-3.24-cloudinit-qga_amd64.tar.xz) | [debian-13-cloudinit-qga_amd64.tar.zst](./debian-13-cloudinit-qga_amd64.tar.zst) |
+| LXC | ARM64 | [alpine-3.24-cloudinit-qga_arm64.tar.xz](./alpine-3.24-cloudinit-qga_arm64.tar.xz) | [debian-13-cloudinit-qga_arm64.tar.zst](./debian-13-cloudinit-qga_arm64.tar.zst) |
+| KVM | amd64（x86_64） | [alpine-3.24-cloudinit-qga_kvm-amd64.qcow2](./alpine-3.24-cloudinit-qga_kvm-amd64.qcow2) | [debian-13-cloudinit-qga_kvm-amd64.qcow2](./debian-13-cloudinit-qga_kvm-amd64.qcow2) |
 
 ## LXC
 

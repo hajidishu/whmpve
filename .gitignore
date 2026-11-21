@@ -5,9 +5,5 @@
 /requirements-dev.txt
 /whmcs-*.zip
 
-/templates/*.qcow2
-/templates/*.tar.xz
-/templates/*.tar.zst
-
 __pycache__/
 *.pyc
