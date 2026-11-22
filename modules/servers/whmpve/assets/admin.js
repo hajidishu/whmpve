@@ -135,7 +135,9 @@
       <label class="wmp-field wmp-check wmp-full"><span>${esc(tr('ui.start_vpss_automatically_at_host_boot'))}</span><input type="checkbox" name="onboot" ${settings.onboot?'checked':''}></label>
       ${input(tr('ui.name'),'name',server?.name)}${input(tr('ui.pve_address'),'host',server?.host,'text','192.168.1.10')}
       ${input(tr('ui.api_token_id'),'token_id',server?.token_id,'text','user@pve!token')}
-      ${input(tr('ui.api_token_secret'),'token_secret','','password',server?.has_token ? tr('ui.leave_blank_to_keep_current_value') : '')}
+      <label class="wmp-field">${esc(tr('ui.api_token_secret'))}
+        <input name="token_secret" type="password" autocomplete="new-password" ${server?.has_token ? `placeholder="••••••••" title="${esc(tr('ui.leave_blank_to_keep_current_value'))}"` : ''}>
+      </label>
       ${input(tr('ui.pve_node'),'node',settings.node,'text','pve')}${input(tr('ui.default_storage_name'),'storage',settings.storage || 'local','text','',tr('ui.use_the_exact_storage_name_shown_in'))}
       ${input(tr('ui.backup_storage_name'),'backup_storage',settings.backup_storage || 'local','text','',tr('ui.enter_the_name_of_a_pve_storage'))}
       ${input(tr('ui.pve_resource_pool'),'pve_pool',settings.pve_pool || 'whmpve')}
